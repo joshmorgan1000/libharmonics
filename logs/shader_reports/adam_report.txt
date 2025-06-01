@@ -1,0 +1,6 @@
+Shader: adam
+Input0: 1 2 3 4
+Input1: 0.1 0.1 0.1 0.1
+Input2: 0 0 0 0
+Input3: 0 0 0 0
+Output: 0.996838 1.99684 2.99684 3.99684

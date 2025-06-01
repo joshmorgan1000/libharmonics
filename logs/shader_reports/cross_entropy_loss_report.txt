@@ -1,0 +1,4 @@
+Shader: cross_entropy_loss
+Input0: 1 2 3
+Input1: 3 2 1
+Output: 3.57628e-07 2.38419e-07 1.19209e-07

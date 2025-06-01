@@ -1,0 +1,5 @@
+Shader: rmsprop
+Input0: 1 2 3 4
+Input1: 0.1 0.1 0.1 0.1
+Input2: 0 0 0 0
+Output: 0.968377 1.96838 2.96838 3.96838

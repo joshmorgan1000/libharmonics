@@ -1,0 +1,9 @@
+#version 450
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) buffer Param { float param[]; };
+layout(std430, binding = 1) readonly buffer Grad { float grad[]; };
+layout(push_constant) uniform PushConsts { float lr; } pc;
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    param[idx] -= pc.lr * grad[idx];
+}

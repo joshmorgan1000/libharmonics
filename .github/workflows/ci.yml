@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: ["*"]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    - name: Install dependencies
+      run: sudo apt-get update && sudo apt-get install -y build-essential cmake glslang-tools zstd
+    - name: Build and run unit tests
+      run: ./scripts/run-tests.sh Release
+    - name: Run GPU shader tests
+      run: ./scripts/gpu_test_shaders.sh
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+    - name: Install dependencies
+      run: choco install cmake ninja glslang zstd -y
+      shell: powershell
+    - name: Build
+      run: bash ./scripts/run-tests.sh Release
+      shell: bash
+    - name: Build CLI tools
+      run: |
+        cmake --build build-Release --target harmonics_cli graph_cli dataset_convert
+      shell: bash
+    - name: Run GPU shader tests
+      run: ./scripts/gpu_test_shaders.sh
+      shell: bash

@@ -1,0 +1,35 @@
+syntax = "proto3";
+package onnx;
+
+enum TensorProto_DataType {
+    UNDEFINED = 0;
+    FLOAT = 1;
+    UINT8 = 2;
+    INT8 = 3;
+    UINT16 = 4;
+    INT16 = 5;
+    INT32 = 6;
+    INT64 = 7;
+    STRING = 8;
+    BOOL = 9;
+    FLOAT16 = 10;
+    DOUBLE = 11;
+}
+
+message TensorProto {
+    repeated int64 dims = 1;
+    TensorProto_DataType data_type = 2;
+    repeated float float_data = 4;
+    repeated int32 int32_data = 5;
+    repeated int64 int64_data = 7;
+    string name = 8;
+    bytes raw_data = 9;
+}
+
+message GraphProto {
+    repeated TensorProto initializer = 5;
+}
+
+message ModelProto {
+    GraphProto graph = 8;
+}

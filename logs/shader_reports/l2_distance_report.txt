@@ -1,0 +1,4 @@
+Shader: l2_distance
+Input0: 1 2 3
+Input1: 3 2 1
+Output: 2.82843

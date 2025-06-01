@@ -1,0 +1,10 @@
+/Users/joshmorgan/projects/harmonics/shaders/int8_matmul.comp
+/Users/joshmorgan/projects/harmonics/shaders/rmsprop.comp
+/Users/joshmorgan/projects/harmonics/shaders/cross_entropy_loss.comp
+/Users/joshmorgan/projects/harmonics/shaders/barycentric_scores.comp
+/Users/joshmorgan/projects/harmonics/shaders/relu.comp
+/Users/joshmorgan/projects/harmonics/shaders/fully_connected.comp
+/Users/joshmorgan/projects/harmonics/shaders/sgd.comp
+/Users/joshmorgan/projects/harmonics/shaders/adam.comp
+/Users/joshmorgan/projects/harmonics/shaders/l2_distance.comp
+/Users/joshmorgan/projects/harmonics/shaders/sigmoid.comp

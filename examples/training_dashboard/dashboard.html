@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Training Dashboard</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 0;
+      padding: 20px;
+      background: #fafafa;
+    }
+    #chart-container {
+      width: 800px;
+      margin: auto;
+    }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+  <h1>Training Progress</h1>
+  <div id="chart-container">
+    <canvas id="plot" width="800" height="400"></canvas>
+    <canvas id="loss" width="800" height="200" style="margin-top:20px"></canvas>
+    <canvas id="lr" width="800" height="200" style="margin-top:20px"></canvas>
+  </div>
+  <p style="text-align:center;">
+    <button id="pause">Pause</button>
+    <button id="clear">Clear</button>
+  </p>
+  <script>
+    const ws = new WebSocket(`ws://${location.host}`);
+    ws.binaryType = 'arraybuffer';
+
+    const ctx = document.getElementById('plot').getContext('2d');
+    const ctxLoss = document.getElementById('loss').getContext('2d');
+    const ctxLr = document.getElementById('lr').getContext('2d');
+    const data = {
+      labels: [],
+      datasets: [{
+        label: 'Gradient L2 Norm',
+        data: [],
+        borderColor: 'rgb(75, 192, 192)',
+        tension: 0.1,
+        fill: false
+      }, {
+        label: 'Moving Avg (10)',
+        data: [],
+        borderColor: 'rgb(255, 99, 132)',
+        tension: 0.1,
+        fill: false
+      }]
+    };
+
+    const chart = new Chart(ctx, {
+      type: 'line',
+      data,
+      options: {
+        animation: false,
+        scales: {
+          x: { title: { display: true, text: 'Step' } },
+          y: { title: { display: true, text: 'L2 Norm' } }
+        }
+      }
+    });
+
+    const lossChart = new Chart(ctxLoss, {
+      type: 'line',
+      data: { labels: [], datasets: [{ label: 'Loss', data: [], borderColor: 'rgb(54, 162, 235)', tension: 0.1, fill: false }] },
+      options: { animation: false, scales: { x: { title: { display: true, text: 'Step' } }, y: { title: { display: true, text: 'Loss' } } } }
+    });
+
+    const lrChart = new Chart(ctxLr, {
+      type: 'line',
+      data: { labels: [], datasets: [{ label: 'Learning Rate', data: [], borderColor: 'rgb(153, 102, 255)', tension: 0.1, fill: false }] },
+      options: { animation: false, scales: { x: { title: { display: true, text: 'Step' } }, y: { title: { display: true, text: 'LR' } } } }
+    });
+
+    let paused = false;
+    const windowSize = 10;
+    const avgBuffer = [];
+
+    document.getElementById('pause').onclick = () => {
+      paused = !paused;
+      document.getElementById('pause').textContent = paused ? 'Resume' : 'Pause';
+    };
+    document.getElementById('clear').onclick = () => {
+      data.labels.length = 0;
+      data.datasets.forEach(d => d.data.length = 0);
+      avgBuffer.length = 0;
+      chart.update();
+      lossChart.data.labels.length = 0;
+      lossChart.data.datasets[0].data.length = 0;
+      lossChart.update();
+      lrChart.data.labels.length = 0;
+      lrChart.data.datasets[0].data.length = 0;
+      lrChart.update();
+    };
+
+    ws.onmessage = ev => {
+      if (paused) return;
+      const vals = new Float32Array(ev.data);
+      const step = vals[0];
+      const grad = vals[1];
+      const loss = vals[2];
+      const lr = vals[3];
+      data.labels.push(step);
+      data.datasets[0].data.push(grad);
+      avgBuffer.push(grad);
+      if (avgBuffer.length > windowSize) avgBuffer.shift();
+      const avg = avgBuffer.reduce((a, b) => a + b, 0) / avgBuffer.length;
+      data.datasets[1].data.push(avg);
+      chart.update();
+      lossChart.data.labels.push(step);
+      lossChart.data.datasets[0].data.push(loss);
+      lossChart.update();
+      lrChart.data.labels.push(step);
+      lrChart.data.datasets[0].data.push(lr);
+      lrChart.update();
+    };
+  </script>
+</body>
+</html>
