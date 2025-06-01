@@ -1,4 +1,4 @@
-<p align="center"><img src="docs/images/harmonics.png" alt="Harmonics logo" width="800"></p>
+<p align="center"><img src="docs/assets/harmonics.png" alt="Harmonics logo" width="600"></p>
 
 Harmonics is a header-only C++17 library implementing a concise domain specific
 language (DSL) for describing neural network flows.  It embraces the
