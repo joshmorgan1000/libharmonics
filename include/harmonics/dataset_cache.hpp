@@ -1,5 +1,29 @@
 #pragma once
 
+/// \file dataset_cache.hpp
+/// \brief Helpers for persisting dataset records locally.
+///
+/// These wrappers allow expensive producers to be cached on disk so
+/// subsequent runs can reload data quickly. When distributed training is
+/// used the caches can be synchronised across machines via simple HTTP
+/// transfers implemented elsewhere in the library.
+///
+/// ### Design rationale
+///
+/// Caching is implemented using a straightforward HDF5 based container so
+/// that it can be used without external dependencies. Each tensor is written
+/// to the file as it is produced which means incomplete runs leave behind a
+/// valid prefix that can be resumed later. When distributed training is
+/// enabled a lightweight checkpoint mechanism ensures partially transferred
+/// caches are automatically continued instead of restarted from scratch.
+///
+/// The cache helpers purposely avoid fancy concurrency controls. They are
+/// designed for single-writer scenarios common during data preparation where
+/// one process reads from a slow source (for example a remote dataset) and
+/// persists the results locally. Other processes can then load the cached file
+/// concurrently without coordination. This simplicity keeps the code easy to
+/// audit and maintain while still covering common use cases.
+
 #include <fstream>
 #include <memory>
 #include <string>
@@ -15,8 +39,14 @@ namespace harmonics {
  * Otherwise samples are read from the provided producer and written to
  * the cache for reuse on subsequent runs.
  */
+/// \brief Caches the output of another producer to an HDF5 file.
+///
+/// On first use samples are read from the wrapped producer and written
+/// to disk. Subsequent instantiations load the cached file directly so
+/// expensive preprocessing steps are avoided.
 class CachedProducer : public Producer {
   public:
+    /// Create a caching wrapper around \p inner storing records at \p path.
     CachedProducer(std::shared_ptr<Producer> inner, const std::string& path, bool compress = false,
                    bool validate = false)
         : path_{path}, compress_{compress}, validate_{validate} {
@@ -30,6 +60,7 @@ class CachedProducer : public Producer {
         }
     }
 
+    /// Return the next tensor from the cache or wrapped producer.
     HTensor next() override {
         if (prod_)
             return prod_->next();
@@ -61,6 +92,10 @@ class CachedProducer : public Producer {
     /// tensors. This mirrors the behaviour of the dataset_cache_cli tool
     /// which allows interrupted transfers to continue without starting
     /// over.
+    /// Fetch missing records from \p remote and append them to the local cache.
+    ///
+    /// Existing tensors are skipped so that interrupted transfers can resume
+    /// without duplicating data.
     void download(std::shared_ptr<Producer> remote) {
         if (!remote)
             return;
@@ -74,6 +109,8 @@ class CachedProducer : public Producer {
             }
         }
 
+        // Append new tensors using a checkpoint consumer so partial files can
+        // be recovered if the process is interrupted.
         CheckpointHdf5Consumer writer(path_, compress_);
         for (std::size_t i = 0; i < existing; ++i) {
             HTensor skip = remote->next();
@@ -93,6 +130,10 @@ class CachedProducer : public Producer {
     }
 
     /// Upload the cached records to a remote consumer.
+    ///
+    /// This helper iterates over the local HDF5 container and sends each
+    /// tensor to \p remote. An empty tensor marks completion so the peer
+    /// can close its side of the transfer cleanly.
     void upload(std::shared_ptr<Consumer> remote) const {
         if (!remote)
             return;
@@ -122,8 +163,12 @@ class CachedProducer : public Producer {
  * remote producer. On destruction any cached records are uploaded to a
  * remote consumer so other machines can fetch them later.
  */
+/// \brief Cache that synchronises records with remote peers.
 class DistributedCachedProducer : public Producer {
   public:
+    /// Construct a distributed cache backed by \p path. When \p remote_src is
+    /// provided the cache is populated by downloading missing tensors. On
+    /// destruction cached records are uploaded to \p remote_dst if supplied.
     DistributedCachedProducer(std::shared_ptr<Producer> inner, const std::string& path,
                               std::shared_ptr<Producer> remote_src = nullptr,
                               std::shared_ptr<Consumer> remote_dst = nullptr, bool compress = false,
@@ -135,6 +180,7 @@ class DistributedCachedProducer : public Producer {
             cache_.download(remote_src_);
     }
 
+    /// Upload any locally cached records before destruction.
     ~DistributedCachedProducer() {
         if (remote_dst_)
             cache_.upload(remote_dst_);

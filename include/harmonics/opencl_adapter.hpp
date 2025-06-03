@@ -10,6 +10,7 @@
 #include <dlfcn.h>
 #include <future>
 #include <optional>
+#include <unordered_map>
 #include <vector>
 
 #if HARMONICS_HAS_OPENCL && __has_include(<CL/cl.h>)
@@ -195,21 +196,29 @@ inline void opencl_destroy_kernel(OpenCLKernel& k) {
 }
 
 inline OpenCLKernel opencl_build_activation_kernel(const std::string& name) {
+    static std::unordered_map<std::string, OpenCLKernel> cache;
+    auto it = cache.find(name);
+    if (it != cache.end())
+        return it->second;
+
+    OpenCLKernel k{};
     if (name == "relu") {
         static const char* SRC =
             "__kernel void relu_f32(__global const float* in, __global float* out) "
             "{ size_t id = get_global_id(0); float v = in[id]; out[id] = v > 0.0f ? v : 0.0f; }";
-        return opencl_build_kernel(SRC, "relu_f32");
+        k = opencl_build_kernel(SRC, "relu_f32");
     } else if (name == "sigmoid") {
         static const char* SRC =
             "__kernel void sigmoid_f32(__global const float* in, __global float* out) "
             "{ size_t id = get_global_id(0); float v = in[id]; out[id] = 1.0f / (1.0f + exp(-v)); "
             "}";
-        return opencl_build_kernel(SRC, "sigmoid_f32");
+        k = opencl_build_kernel(SRC, "sigmoid_f32");
     } else if (name == "identity" || name == "id") {
-        return opencl_build_kernel(OPENCL_COPY_KERNEL_SRC, "copy_buf");
+        k = opencl_build_kernel(OPENCL_COPY_KERNEL_SRC, "copy_buf");
     }
-    return {};
+
+    cache.emplace(name, k);
+    return k;
 }
 
 #else
@@ -230,7 +239,15 @@ inline OpenCLKernel opencl_build_kernel(const char* source, const char* name) {
 
 inline void opencl_destroy_kernel(OpenCLKernel&) {}
 
-inline OpenCLKernel opencl_build_activation_kernel(const std::string&) { return {}; }
+inline OpenCLKernel opencl_build_activation_kernel(const std::string& name) {
+    static std::unordered_map<std::string, OpenCLKernel> cache;
+    auto it = cache.find(name);
+    if (it != cache.end())
+        return it->second;
+    OpenCLKernel k{};
+    cache.emplace(name, k);
+    return k;
+}
 
 inline OpenCLBuffer opencl_malloc(std::size_t bytes) {
     return OpenCLBuffer{std::vector<std::byte>(bytes)};

@@ -44,6 +44,7 @@
 #include "harmonics/gpu/cuda/context.hpp"
 #endif
 #include "harmonics/cuda_scheduler.hpp"
+#include "harmonics/fpga_scheduler.hpp"
 #include "harmonics/graph.hpp"
 #include "harmonics/precision_policy.hpp"
 #include "harmonics/wasm_backend.hpp"
@@ -59,6 +60,7 @@
 namespace harmonics {
 
 struct CudaScheduler;
+struct FpgaScheduler;
 
 // Forward declarations for serialization helpers.
 void write_tensor(std::ostream& out, const HTensor& t);
@@ -198,6 +200,10 @@ inline CycleRuntime::CycleRuntime(const HarmonicGraph& g, std::shared_ptr<Precis
 #if HARMONICS_HAS_VULKAN
     if (deploy.gpu_device_index)
         set_vulkan_device_index(*deploy.gpu_device_index);
+#endif
+#if HARMONICS_HAS_OPENCL
+    if (deploy.fpga_device_index)
+        set_opencl_device_index(*deploy.fpga_device_index);
 #endif
     bool handled = false;
     auto try_gpu = [&]() {
@@ -546,6 +552,32 @@ inline void save_cached_shader(const std::string& name, const std::vector<uint32
               static_cast<std::streamsize>(spv.size() * sizeof(uint32_t)));
 }
 
+/// Try load a compiled CUDA kernel from disk.
+inline std::optional<std::vector<uint32_t>> load_cached_cuda_kernel(const std::string& name) {
+    std::string key = blake3(name.data(), name.size());
+    std::filesystem::path path = shader_cache_directory();
+    path /= key + ".ptx";
+    std::ifstream in(path, std::ios::binary);
+    if (!in)
+        return std::nullopt;
+    in.seekg(0, std::ios::end);
+    std::streamsize size = in.tellg();
+    in.seekg(0, std::ios::beg);
+    std::vector<uint32_t> data(static_cast<std::size_t>(size) / sizeof(uint32_t));
+    in.read(reinterpret_cast<char*>(data.data()), size);
+    return data;
+}
+
+/// Store a compiled CUDA kernel to the persistent cache on disk.
+inline void save_cached_cuda_kernel(const std::string& name, const std::vector<uint32_t>& ptx) {
+    std::string key = blake3(name.data(), name.size());
+    std::filesystem::path path = shader_cache_directory();
+    path /= key + ".ptx";
+    std::ofstream out(path, std::ios::binary);
+    out.write(reinterpret_cast<const char*>(ptx.data()),
+              static_cast<std::streamsize>(ptx.size() * sizeof(uint32_t)));
+}
+
 #if HARMONICS_HAS_VULKAN || HARMONICS_HAS_CUDA
 /// Directory where GLSL shader sources reside.
 inline std::string shader_source_directory() {
@@ -639,8 +671,15 @@ inline GpuCycleKernels compile_cycle_kernels(const HarmonicGraph& g, PrecisionPo
                     spv = compile_shader(shader);
                     save_cached_shader(shader_key, spv);
                 }
+#elif HARMONICS_HAS_CUDA
+                if (auto disk = load_cached_cuda_kernel(shader_key)) {
+                    spv = *disk;
+                } else {
+                    spv = compile_shader(shader);
+                    save_cached_cuda_kernel(shader_key, spv);
+                }
 #else
-                spv = compile_shader(shader_key);
+                spv = compile_shader(shader);
 #endif
                 scache.emplace(shader_key, spv);
                 trim_shader_cache();
@@ -735,22 +774,22 @@ inline void launch_cycle_kernel(const GpuCycleKernels& kernels, const HarmonicGr
                 if (!prod)
                     throw std::runtime_error("producer not bound");
                 value_host = prod->next();
-                value_dev = to_device(value_host);
+                value_dev = to_device_async(value_host).get();
                 prod_dev[op.source.index] = value_dev;
                 prod_fetched[op.source.index] = true;
             } else {
                 value_dev = prod_dev[op.source.index];
-                value_host = to_host(value_dev);
+                value_host = to_host_async(value_dev).get();
             }
             break;
         }
         case NodeKind::Layer:
             value_dev = layer_dev[op.source.index];
-            value_host = to_host(value_dev);
+            value_host = to_host_async(value_dev).get();
             break;
         case NodeKind::Consumer:
             value_dev = cons_dev[op.source.index];
-            value_host = to_host(value_dev);
+            value_host = to_host_async(value_dev).get();
             break;
         }
 
@@ -762,14 +801,14 @@ inline void launch_cycle_kernel(const GpuCycleKernels& kernels, const HarmonicGr
                 if (!prod)
                     throw std::runtime_error("producer not bound");
                 target_host = prod->next();
-                prod_dev[op.target.index] = to_device(target_host);
+                prod_dev[op.target.index] = to_device_async(target_host).get();
                 break;
             }
             case NodeKind::Layer:
-                target_host = to_host(layer_dev[op.target.index]);
+                target_host = to_host_async(layer_dev[op.target.index]).get();
                 break;
             case NodeKind::Consumer:
-                target_host = to_host(cons_dev[op.target.index]);
+                target_host = to_host_async(cons_dev[op.target.index]).get();
                 break;
             }
             if (op.func && op.source.kind == NodeKind::Layer) {
@@ -779,23 +818,34 @@ inline void launch_cycle_kernel(const GpuCycleKernels& kernels, const HarmonicGr
             continue;
         }
 
+        GpuTensor result_dev{};
         if (op.func) {
             const auto& fn = getActivation(*op.func);
             value_host = fn(value_host);
-            value_dev = to_device(value_host);
+            result_dev = to_device_async(value_host).get();
+        } else {
+#if HARMONICS_HAS_CUDA
+            result_dev.dtype = value_dev.dtype;
+            result_dev.shape = value_dev.shape;
+            auto bytes = cuda_buffer_size(value_dev.device_data);
+            result_dev.device_data = cuda_malloc(bytes);
+            cuda_copy_buffer(result_dev.device_data, value_dev.device_data, bytes);
+#else
+            result_dev = value_dev;
+#endif
         }
 
         switch (op.target.kind) {
         case NodeKind::Producer:
-            prod_dev[op.target.index] = value_dev;
+            prod_dev[op.target.index] = result_dev;
             break;
         case NodeKind::Layer:
-            layer_dev[op.target.index] = value_dev;
+            layer_dev[op.target.index] = result_dev;
             if (state.precision_bits[op.target.index] == 0)
                 state.precision_bits[op.target.index] = policy.select_bits(op.target.index);
             break;
         case NodeKind::Consumer:
-            cons_dev[op.target.index] = value_dev;
+            cons_dev[op.target.index] = result_dev;
             break;
         }
     }
@@ -821,8 +871,8 @@ inline void launch_cycle_kernel(const GpuCycleKernels& kernels, const HarmonicGr
 /**
  * @brief Execute the compiled FPGA kernels for a cycle.
  */
-inline void launch_fpga_cycle_kernel(const FpgaCycleKernels& kernels, const HarmonicGraph& g,
-                                     CycleState& state, PrecisionPolicy& policy) {
+inline void FpgaScheduler::launch(const FpgaCycleKernels& kernels, const HarmonicGraph& g,
+                                  CycleState& state, PrecisionPolicy& policy) {
     if (!kernels.compiled)
         throw std::runtime_error("FPGA kernels not available");
     std::vector<FpgaTensor> prod_dev(state.producer_tensors.size());
@@ -842,22 +892,22 @@ inline void launch_fpga_cycle_kernel(const FpgaCycleKernels& kernels, const Harm
                 if (!prod)
                     throw std::runtime_error("producer not bound");
                 value_host = prod->next();
-                value_dev = fpga_to_device(value_host);
+                value_dev = fpga_to_device_async(value_host).get();
                 prod_dev[op.source.index] = value_dev;
                 prod_fetched[op.source.index] = true;
             } else {
                 value_dev = prod_dev[op.source.index];
-                value_host = fpga_to_host(value_dev);
+                value_host = fpga_to_host_async(value_dev).get();
             }
             break;
         }
         case NodeKind::Layer:
             value_dev = layer_dev[op.source.index];
-            value_host = fpga_to_host(value_dev);
+            value_host = fpga_to_host_async(value_dev).get();
             break;
         case NodeKind::Consumer:
             value_dev = cons_dev[op.source.index];
-            value_host = fpga_to_host(value_dev);
+            value_host = fpga_to_host_async(value_dev).get();
             break;
         }
 
@@ -869,14 +919,14 @@ inline void launch_fpga_cycle_kernel(const FpgaCycleKernels& kernels, const Harm
                 if (!prod)
                     throw std::runtime_error("producer not bound");
                 target_host = prod->next();
-                prod_dev[op.target.index] = fpga_to_device(target_host);
+                prod_dev[op.target.index] = fpga_to_device_async(target_host).get();
                 break;
             }
             case NodeKind::Layer:
-                target_host = fpga_to_host(layer_dev[op.target.index]);
+                target_host = fpga_to_host_async(layer_dev[op.target.index]).get();
                 break;
             case NodeKind::Consumer:
-                target_host = fpga_to_host(cons_dev[op.target.index]);
+                target_host = fpga_to_host_async(cons_dev[op.target.index]).get();
                 break;
             }
             if (op.func && op.source.kind == NodeKind::Layer) {
@@ -905,7 +955,7 @@ inline void launch_fpga_cycle_kernel(const FpgaCycleKernels& kernels, const Harm
             if (op.func) {
             const auto& fn = getActivation(*op.func);
             value_host = fn(value_host);
-            result_dev = fpga_to_device(value_host);
+            result_dev = fpga_to_device_async(value_host).get();
         } else {
             result_dev = fpga_copy_tensor(value_dev);
         }
@@ -957,7 +1007,7 @@ inline void CycleRuntime::forward_gpu() {
 inline void CycleRuntime::forward_fpga() {
     // Execute the cycle using the FPGA backend when available.
     auto kernels = compile_fpga_cycle_kernels(graph_);
-    launch_fpga_cycle_kernel(kernels, graph_, state_, *policy_);
+    FpgaScheduler::launch(kernels, graph_, state_, *policy_);
     if (secure_)
         compute_proof();
 }
@@ -1197,6 +1247,7 @@ inline void CudaScheduler::launch(const GpuCycleKernels& kernels, const Harmonic
     for (const auto& op : kernels.ops) {
         HTensor value_host;
         GpuTensor value_dev;
+        bool value_host_valid = false;
 
         switch (op.source.kind) {
         case NodeKind::Producer: {
@@ -1204,23 +1255,28 @@ inline void CudaScheduler::launch(const GpuCycleKernels& kernels, const Harmonic
                 auto prod = g.producer_bindings[op.source.index];
                 if (!prod)
                     throw std::runtime_error("producer not bound");
-                value_host = prod->next();
-                value_dev = to_device(value_host);
+                HTensor tmp = prod->next();
+                value_dev = to_device_async(tmp).get();
+                if (op.backward)
+                    value_host = std::move(tmp), value_host_valid = true;
                 prod_dev[op.source.index] = value_dev;
                 prod_fetched[op.source.index] = true;
             } else {
                 value_dev = prod_dev[op.source.index];
-                value_host = to_host(value_dev);
+                if (op.backward)
+                    value_host = to_host_async(value_dev).get(), value_host_valid = true;
             }
             break;
         }
         case NodeKind::Layer:
             value_dev = layer_dev[op.source.index];
-            value_host = to_host(value_dev);
+            if (op.backward)
+                value_host = to_host_async(value_dev).get(), value_host_valid = true;
             break;
         case NodeKind::Consumer:
             value_dev = cons_dev[op.source.index];
-            value_host = to_host(value_dev);
+            if (op.backward)
+                value_host = to_host_async(value_dev).get(), value_host_valid = true;
             break;
         }
 
@@ -1232,14 +1288,14 @@ inline void CudaScheduler::launch(const GpuCycleKernels& kernels, const Harmonic
                 if (!prod)
                     throw std::runtime_error("producer not bound");
                 target_host = prod->next();
-                prod_dev[op.target.index] = to_device(target_host);
+                prod_dev[op.target.index] = to_device_async(target_host).get();
                 break;
             }
             case NodeKind::Layer:
-                target_host = to_host(layer_dev[op.target.index]);
+                target_host = to_host_async(layer_dev[op.target.index]).get();
                 break;
             case NodeKind::Consumer:
-                target_host = to_host(cons_dev[op.target.index]);
+                target_host = to_host_async(cons_dev[op.target.index]).get();
                 break;
             }
             if (op.func && op.source.kind == NodeKind::Layer) {
@@ -1250,9 +1306,32 @@ inline void CudaScheduler::launch(const GpuCycleKernels& kernels, const Harmonic
         }
 
         if (op.func) {
-            const auto& fn = getActivation(*op.func);
-            value_host = fn(value_host);
-            value_dev = to_device(value_host);
+#if HARMONICS_HAS_CUDA
+            bool has_cuda = kernels.backend == GpuBackend::Cuda &&
+                            value_dev.dtype == HTensor::DType::Float32 &&
+                            (*op.func == "relu" || *op.func == "sigmoid" || *op.func == "softmax" ||
+                             *op.func == "gelu");
+            if (has_cuda) {
+                std::size_t elems = cuda_buffer_size(value_dev.device_data) / sizeof(float);
+                value_dev.dtype = HTensor::DType::Float32;
+                if (*op.func == "relu")
+                    cuda_relu_buffer(value_dev.device_data, value_dev.device_data, elems);
+                else if (*op.func == "sigmoid")
+                    cuda_sigmoid_buffer(value_dev.device_data, value_dev.device_data, elems);
+                else if (*op.func == "softmax")
+                    cuda_softmax_buffer(value_dev.device_data, value_dev.device_data, elems);
+                else
+                    cuda_gelu_buffer(value_dev.device_data, value_dev.device_data, elems);
+            } else
+#endif
+            {
+                if (!value_host_valid)
+                    value_host = to_host_async(value_dev).get();
+                const auto& fn = getActivation(*op.func);
+                value_host = fn(value_host);
+                value_dev = to_device_async(value_host).get();
+                value_host_valid = true;
+            }
         }
 
         switch (op.target.kind) {

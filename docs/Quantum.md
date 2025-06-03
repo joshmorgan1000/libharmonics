@@ -1,10 +1,17 @@
-# Quantum Stub
+# Quantum Mapping
 
-The quantum stub demonstrates how a `HarmonicGraph` can be translated into a quantum circuit. It serves as a proof of concept for mapping the DSL onto non-classical targets and highlights that the framework is ready for future quantum accelerators.
+This document explains how a `HarmonicGraph` can be translated into a quantum circuit and executed either on the simulator or via the hardware backend.
+
+> **Note**
+> A lightweight hardware backend is now available through
+> `harmonics::execute_on_hardware()`. When the project is built with
+> `-DHARMONICS_HAS_QUANTUM_HW=1` the runtime loads a device library at
+> execution time. If the library cannot be found the call transparently falls
+> back to the built‑in simulator.
 
 ## map_to_quantum()
 
-The helper `map_to_quantum()` is defined in `include/harmonics/quantum_stub.hpp`. It assigns a qubit to every producer, layer and consumer in the graph. Each flow arrow becomes a controlled-X gate (`CX`), and consumers are measured at the end of the circuit.
+The helper `map_to_quantum()` assigns a qubit to every producer, layer and consumer in the graph. Each flow arrow becomes a controlled-X gate (`CX`), and consumers are measured at the end of the circuit.
 
 ```cpp
 harmonics::Parser parser{"producer p {1}; consumer c {1}; layer l; cycle { p -> l; l -> c; }"};
@@ -14,168 +21,6 @@ auto qc = harmonics::map_to_quantum(g);
 ```
 
 `QuantumCircuit` holds the number of qubits and a list of `QuantumOp` instructions describing the gates.
-
-## Demonstration
-
-The unit test `quantum_stub_test.cpp` builds a small graph and verifies the generated circuit. Each node maps to a qubit and the final operations include measurement.
-
-## Larger graph example
-
-For a more substantial demonstration the program `examples/quantum_stub_demo.cpp`
-constructs a graph with multiple producers and layers. The graph contains
-branching flows so the resulting circuit includes several controlled-X gates.
-
-```cpp
-const char* src = R"(
-    producer a {2};
-    producer b {2};
-    layer l1;
-    layer l2;
-    consumer out {2};
-    cycle {
-        a -> l1;
-        b -> l1;
-        l1 -> l2;
-        l1 -> out;
-        l2 -> out;
-    }
-)";
-harmonics::Parser parser{src};
-auto ast = parser.parse_declarations();
-auto g = harmonics::build_graph(ast);
-auto qc = harmonics::map_to_quantum(g);
-```
-
-Running the example prints the number of qubits followed by a list of quantum
-operations. Each flow in the graph appears as a `CX` instruction while the
-consumer qubits are measured at the end.
-
-### Running the demo
-
-Build the project with the helper script and run the `quantum_stub_example`
-binary from the build directory:
-
-```bash
-./scripts/run-tests.sh         # configures and builds
-./build-Release/quantum_stub_example
-```
-
-The demo outputs the qubit count and each gate on a separate line. A typical
-run prints:
-
-```
-Qubits: 5
-CX 0 3
-CX 1 3
-CX 3 4
-CX 3 2
-CX 4 2
-Measure 2
-```
-
-## Expanded graph example
-
-The program `examples/quantum_stub_large.cpp` demonstrates mapping a bigger
-graph with three layers and multiple producers. The additional branching
-generates more `CX` operations and showcases the stub on a slightly larger
-model.
-
-```cpp
-const char* src = R"(
-    producer a {2};
-    producer b {2};
-    producer c {2};
-    layer l1;
-    layer l2;
-    layer l3;
-    consumer out {2};
-    cycle {
-        a -> l1;
-        b -> l1;
-        c -> l2;
-        l1 -> l2;
-        l2 -> l3;
-        l1 -> out;
-        l2 -> out;
-        l3 -> out;
-    }
-)";
-harmonics::Parser parser{src};
-auto ast = parser.parse_declarations();
-auto g = harmonics::build_graph(ast);
-auto qc = harmonics::map_to_quantum(g);
-```
-
-Run it the same way:
-
-```bash
-./scripts/run-tests.sh
-./build-Release/quantum_stub_large_example
-```
-
-Example output:
-
-```
-Qubits: 7
-CX 0 3
-CX 1 3
-CX 2 4
-CX 3 4
-CX 4 5
-CX 3 6
-CX 4 6
-CX 5 6
-Measure 6
-```
-
-## Complex model example
-
-To illustrate the stub on a deeper network the program
-`examples/quantum_stub_complex.cpp` builds a graph with six layers,
-four producers and multiple skip connections. The resulting circuit
-contains many more controlled-X operations.
-
-```cpp
-const char* src = R"(
-    producer a {2};
-    producer b {2};
-    producer c {2};
-    producer d {2};
-    layer l1;
-    layer l2;
-    layer l3;
-    layer l4;
-    layer l5;
-    layer l6;
-    consumer out {2};
-    cycle {
-        a -> l1;
-        b -> l1;
-        c -> l2;
-        d -> l3;
-        l1 -> l2;
-        l2 -> l3;
-        l3 -> l4;
-        l2 -> l4;
-        l4 -> l5;
-        l1 -> l5;
-        l5 -> l6;
-        l3 -> l6;
-        l6 -> out;
-    }
-)";
-harmonics::Parser parser{src};
-auto ast = parser.parse_declarations();
-auto g = harmonics::build_graph(ast);
-auto qc = harmonics::map_to_quantum(g);
-```
-
-Build and run it using the helper script:
-
-```bash
-./scripts/run-tests.sh
-./build-Release/quantum_stub_complex_example
-```
 
 ## Quantum hardware backend
 
@@ -211,6 +56,90 @@ Both programs print the measurement results returned by the device.  The unit
 test `quantum_hardware_test.cpp` exercises the same code path and verifies that
 the library falls back to the simulator when the hardware library is missing.
 
+### Hardware backend
+
+A minimal plugin is provided in `examples/quantum_hw_backend.cpp`. When Harmonics
+is configured with `-DHARMONICS_HAS_QUANTUM_HW=1` this file builds into
+`libquantum_hw.so` alongside the examples. The backend uses the runtime device
+selection helpers and forwards circuits to the simulator. Load the library at
+runtime by setting the environment variables and run an example program:
+
+```bash
+export HARMONICS_ENABLE_QUANTUM_HW=1
+export HARMONICS_QUANTUM_HW_LIB=libquantum_hw.so
+./build-Release/quantum_hardware_demo
+```
+
+### Running on a real device
+
+To target an actual quantum accelerator, implement a shared library that
+provides `harmonics_quantum_execute()` and translates `QuantumCircuit`
+objects to your device SDK.  A minimal sketch might look like:
+
+```cpp
+#include <harmonics/quantum_backend.hpp>
+#include <my_qpu_sdk.hpp>
+
+extern "C" harmonics::QuantumResult
+harmonics_quantum_execute(const harmonics::QuantumCircuit& qc) {
+    auto dev_circuit = translate(qc); // convert to device representation
+    auto measurements = run_on_qpu(dev_circuit);
+    return {measurements};
+}
+```
+
+Compile the library (for example `libqpu.so`) and set the environment
+variables so that Harmonics loads it at runtime:
+
+```bash
+export HARMONICS_ENABLE_QUANTUM_HW=1
+export HARMONICS_QUANTUM_HW_LIB=libqpu.so
+./build-Release/quantum_hardware_demo
+```
+
+
+The demo will now execute the circuit on the device and print the
+measurement results returned by the hardware.
+
+### Hardware library interface
+
+The device library loaded by `execute_on_hardware()` must export the
+function
+
+```cpp
+extern "C" harmonics::QuantumResult
+harmonics_quantum_execute(const harmonics::QuantumCircuit& qc);
+```
+
+The runtime calls this entry point for every circuit and expects the
+returned measurements in the same format as the simulator. Device
+selection is handled through `set_quantum_device_index()` or the
+`HARMONICS_QUANTUM_HW_DEVICE` environment variable. Refer to
+`examples/quantum_hw_backend.cpp` for a minimal implementation.
+
+### Checking runtime availability
+
+Call `quantum_hardware_runtime_available()` to verify that the
+environment variables are configured correctly and that a device
+library can be loaded.  The helper returns `true` when
+`HARMONICS_ENABLE_QUANTUM_HW=1` is set and the library specified by
+`HARMONICS_QUANTUM_HW_LIB` (or `libquantum_hw.so` by default) can be
+found on the system.
+
+```cpp
+if (!harmonics::quantum_hardware_runtime_available()) {
+    std::cerr << "Quantum hardware not found, falling back to simulator\n";
+}
+```
+
+### Device selection
+
+When multiple quantum accelerators are available, set `HARMONICS_QUANTUM_HW_DEVICE`
+to pick a specific device. The current backend exposes helper functions
+`set_quantum_device_index()` and `quantum_device_index()` which mirror the
+behaviour of the GPU and OpenCL selectors.
+
 ## Future work
 
-The stub is intentionally minimal. Future releases may extend it into a full backend. The [project roadmap](../ROADMAP.md) tracks the task to showcase the stub on a larger model and expand this documentation.
+Further hardware integrations and optimised compilation passes are planned.
+The [project roadmap](../ROADMAP.md) tracks upcoming tasks and features.

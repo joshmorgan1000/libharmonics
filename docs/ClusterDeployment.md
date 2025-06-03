@@ -37,3 +37,7 @@ graph. The server prints the dimension of the tensor received from the client.
 
 This setup mirrors a minimal cluster deployment where each partition executes in
 its own process and communicates via the distributed scheduler.
+
+Bandwidth usage can be reduced by enabling compression on the remote
+connections.  Set `compress` to `true` in the `RemoteBinding` definitions in the
+client and server examples.

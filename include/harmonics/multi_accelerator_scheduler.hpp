@@ -29,6 +29,7 @@ class MultiAcceleratorScheduler {
             if (i < deploy_.partitions.size()) {
                 d.backend = deploy_.partitions[i].backend;
                 d.gpu_device_index = deploy_.partitions[i].device_index;
+                d.fpga_device_index = deploy_.partitions[i].fpga_device_index;
             }
             runtimes_.emplace_back(graphs_[i], make_hardware_policy(), d);
         }

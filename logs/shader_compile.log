@@ -1,10 +1,33 @@
-/Users/joshmorgan/projects/harmonics/shaders/int8_matmul.comp
-/Users/joshmorgan/projects/harmonics/shaders/rmsprop.comp
-/Users/joshmorgan/projects/harmonics/shaders/cross_entropy_loss.comp
-/Users/joshmorgan/projects/harmonics/shaders/barycentric_scores.comp
 /Users/joshmorgan/projects/harmonics/shaders/relu.comp
-/Users/joshmorgan/projects/harmonics/shaders/fully_connected.comp
+/Users/joshmorgan/projects/harmonics/shaders/barycentric_scores.comp
+/Users/joshmorgan/projects/harmonics/shaders/int3_matmul.comp
+/Users/joshmorgan/projects/harmonics/shaders/mse_loss.comp
+/Users/joshmorgan/projects/harmonics/shaders/rmsprop.comp
 /Users/joshmorgan/projects/harmonics/shaders/sgd.comp
-/Users/joshmorgan/projects/harmonics/shaders/adam.comp
+/Users/joshmorgan/projects/harmonics/shaders/max_pool.comp
+ERROR: /Users/joshmorgan/projects/harmonics/shaders/max_pool.comp:4: '' :  syntax error, unexpected OUT, expecting IDENTIFIER
+ERROR: 1 compilation errors.  No code generated.
+
+
+ERROR: Linking compute stage: Missing entry point: Each stage requires one entry point
+
+SPIR-V is not generated for failed compile or link
+glslangValidator failed for /Users/joshmorgan/projects/harmonics/shaders/max_pool.comp
+/Users/joshmorgan/projects/harmonics/shaders/cross_entropy_loss.comp
 /Users/joshmorgan/projects/harmonics/shaders/l2_distance.comp
+/Users/joshmorgan/projects/harmonics/shaders/adam.comp
+/Users/joshmorgan/projects/harmonics/shaders/avg_pool.comp
+ERROR: /Users/joshmorgan/projects/harmonics/shaders/avg_pool.comp:4: '' :  syntax error, unexpected OUT, expecting IDENTIFIER
+ERROR: 1 compilation errors.  No code generated.
+
+
+ERROR: Linking compute stage: Missing entry point: Each stage requires one entry point
+
+SPIR-V is not generated for failed compile or link
+glslangValidator failed for /Users/joshmorgan/projects/harmonics/shaders/avg_pool.comp
+/Users/joshmorgan/projects/harmonics/shaders/fully_connected.comp
+/Users/joshmorgan/projects/harmonics/shaders/int8_matmul.comp
+/Users/joshmorgan/projects/harmonics/shaders/prelu.comp
+/Users/joshmorgan/projects/harmonics/shaders/int4_matmul.comp
+/Users/joshmorgan/projects/harmonics/shaders/selu.comp
 /Users/joshmorgan/projects/harmonics/shaders/sigmoid.comp

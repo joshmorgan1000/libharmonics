@@ -45,6 +45,18 @@ const auto& w = harmonics::layer_weights(rt, "hidden");
 std::cout << w.data().size() << " bytes" << '\n';
 ```
 
+## Profiling runtime memory
+
+`profile_runtime_memory(runtime)` returns a `RuntimeMemoryStats` record summarising
+the bytes reserved for tensors and weights.
+
+```cpp
+harmonics::CycleRuntime rt{g};
+rt.forward();
+auto stats = harmonics::profile_runtime_memory(rt);
+std::cout << stats.total() << " bytes used" << '\n';
+```
+
 ## Interactive shell example
 
 The `shell_example` binary demonstrates these helpers. It reads DSL lines

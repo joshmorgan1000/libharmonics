@@ -20,6 +20,11 @@ using DeviceStorage = CudaBuffer;
 using DeviceStorage = std::vector<std::byte>;
 #endif
 
+struct DeviceBufferSlot {
+    DeviceStorage storage{};
+    std::shared_future<void> fence{};
+};
+
 /**
  * Simplified GPU tensor used by the reference implementation.
  *
@@ -78,8 +83,8 @@ inline std::size_t device_ring_size() {
     return 3;
 }
 
-inline Wrapper<DeviceStorage>& device_buffer_ring() {
-    static Wrapper<DeviceStorage> ring{device_ring_size()};
+inline Wrapper<DeviceBufferSlot>& device_buffer_ring() {
+    static Wrapper<DeviceBufferSlot> ring{device_ring_size()};
     return ring;
 }
 
@@ -196,7 +201,10 @@ inline bool gpu_runtime_available() {
 inline GpuTensor to_device(const HTensor& t) {
     GpuTensor dev{t.dtype(), t.shape()};
 #if HARMONICS_HAS_VULKAN
-    auto& buf = device_buffer_ring().acquire();
+    auto& slot = device_buffer_ring().acquire();
+    if (slot.fence.valid())
+        slot.fence.wait();
+    auto& buf = slot.storage;
 #if HARMONICS_USE_VULKAN_RT
     if (buf.buffer == VK_NULL_HANDLE || buf.size < t.data().size()) {
         if (buf.buffer != VK_NULL_HANDLE)
@@ -211,9 +219,13 @@ inline GpuTensor to_device(const HTensor& t) {
     }
 #endif
     vulkan_memcpy_to_device(buf, t.data().data(), t.data().size());
+    slot.fence = std::shared_future<void>{};
     dev.device_data = buf;
 #elif HARMONICS_HAS_CUDA
-    auto& buf = device_buffer_ring().acquire();
+    auto& slot = device_buffer_ring().acquire();
+    if (slot.fence.valid())
+        slot.fence.wait();
+    auto& buf = slot.storage;
 #if HARMONICS_USE_CUDA_RT
     if (buf.ptr == nullptr || buf.size < t.data().size()) {
         if (buf.ptr)
@@ -228,6 +240,7 @@ inline GpuTensor to_device(const HTensor& t) {
     }
 #endif
     cuda_memcpy_to_device(buf, t.data().data(), t.data().size());
+    slot.fence = std::shared_future<void>{};
     dev.device_data = buf;
 #else
     dev.device_data = t.data();
@@ -259,7 +272,10 @@ inline HTensor to_host(const GpuTensor& t) {
 inline std::future<GpuTensor> to_device_async(const HTensor& t) {
 #if HARMONICS_HAS_VULKAN
     GpuTensor dev{t.dtype(), t.shape()};
-    auto& buf = device_buffer_ring().acquire();
+    auto& slot = device_buffer_ring().acquire();
+    if (slot.fence.valid())
+        slot.fence.wait();
+    auto& buf = slot.storage;
 #if HARMONICS_USE_VULKAN_RT
     if (buf.buffer == VK_NULL_HANDLE || buf.size < t.data().size()) {
         if (buf.buffer != VK_NULL_HANDLE)
@@ -274,6 +290,7 @@ inline std::future<GpuTensor> to_device_async(const HTensor& t) {
     }
 #endif
     auto copy_future = vulkan_memcpy_to_device_async(buf, t.data().data(), t.data().size());
+    slot.fence = copy_future.share();
     dev.device_data = buf;
     return std::async(std::launch::async, [f = std::move(copy_future), dev]() mutable {
         f.get();
@@ -281,7 +298,10 @@ inline std::future<GpuTensor> to_device_async(const HTensor& t) {
     });
 #elif HARMONICS_HAS_CUDA
     GpuTensor dev{t.dtype(), t.shape()};
-    auto& buf = device_buffer_ring().acquire();
+    auto& slot = device_buffer_ring().acquire();
+    if (slot.fence.valid())
+        slot.fence.wait();
+    auto& buf = slot.storage;
 #if HARMONICS_USE_CUDA_RT
     if (buf.ptr == nullptr || buf.size < t.data().size()) {
         if (buf.ptr)
@@ -296,6 +316,7 @@ inline std::future<GpuTensor> to_device_async(const HTensor& t) {
     }
 #endif
     auto copy_future = cuda_memcpy_to_device_async(buf, t.data().data(), t.data().size());
+    slot.fence = copy_future.share();
     dev.device_data = buf;
     return std::async(std::launch::async, [f = std::move(copy_future), dev]() mutable {
         f.get();

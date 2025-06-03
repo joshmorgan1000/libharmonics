@@ -159,4 +159,82 @@ cycle { p -(id)-> l1 -(id)-> l2 -> c; }
     EXPECT_EQ(state.consumer_tensors[idx].shape().size(), 1u);
     EXPECT_EQ(state.consumer_tensors[idx].shape()[0], 1u);
 }
+
+TEST(RemoteScheduler, ForwardsAcrossGrpc) {
+    const char* src = R"(
+producer p {1};
+consumer c {1};
+layer l1;
+layer l2;
+cycle { p -(id)-> l1 -(id)-> l2 -> c; }
+)";
+    Parser parser{src};
+    auto ast = parser.parse_declarations();
+    auto g = build_graph(ast);
+    auto parts = partition_by_layer(g, 1);
+
+    registerActivation("id", std::make_shared<IdActivation>());
+    auto prod = std::make_shared<FixedProducer>(1);
+    parts.first.bindProducer("p", prod);
+
+    GrpcServer server;
+
+    std::vector<RemoteBinding> cons_bindings{
+        {"boundary0", "127.0.0.1", server.port(), RemoteTransport::GRPC}};
+    RemoteScheduler sched1{parts.first, {}, cons_bindings};
+
+    std::vector<RemoteBinding> prod_bindings{
+        {"boundary0", "127.0.0.1", server.port(), RemoteTransport::GRPC}};
+    RemoteScheduler sched2{parts.second, prod_bindings, {}};
+
+    sched1.step();
+    sched2.step();
+
+    const auto& state = sched2.runtime().state();
+    auto idx = parts.second.find("c").index;
+    EXPECT_EQ(state.consumer_tensors[idx].shape().size(), 1u);
+    EXPECT_EQ(state.consumer_tensors[idx].shape()[0], 1u);
+}
+
+TEST(RemoteScheduler, ForwardsAcrossFlight) {
+    const char* src = R"(
+producer p {1};
+consumer c {1};
+layer l1;
+layer l2;
+cycle { p -(id)-> l1 -(id)-> l2 -> c; }
+)";
+    Parser parser{src};
+    auto ast = parser.parse_declarations();
+    auto g = build_graph(ast);
+    auto parts = partition_by_layer(g, 1);
+
+    registerActivation("id", std::make_shared<IdActivation>());
+    auto prod = std::make_shared<FixedProducer>(1);
+    parts.first.bindProducer("p", prod);
+
+    GrpcServer in_srv;
+    GrpcServer out_srv;
+    std::thread bridge([&]() {
+        auto t = in_srv.pop();
+        out_srv.push(t);
+    });
+
+    std::vector<RemoteBinding> cons_bindings{
+        {"boundary0", "127.0.0.1", in_srv.port(), RemoteTransport::Flight}};
+    RemoteScheduler sched1{parts.first, {}, cons_bindings};
+
+    std::vector<RemoteBinding> prod_bindings{
+        {"boundary0", "127.0.0.1", out_srv.port(), RemoteTransport::Flight}};
+    RemoteScheduler sched2{parts.second, prod_bindings, {}};
+
+    sched1.step();
+    sched2.step();
+    bridge.join();
+
+    const auto& state = sched2.runtime().state();
+    auto idx = parts.second.find("c").index;
+    EXPECT_EQ(state.consumer_tensors[idx].shape().size(), 1u);
+    EXPECT_EQ(state.consumer_tensors[idx].shape()[0], 1u);
+}
 #endif

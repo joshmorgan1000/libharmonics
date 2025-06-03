@@ -16,6 +16,7 @@
 #include "harmonics/cycle.hpp"
 #include "harmonics/deployment.hpp"
 #include "harmonics/graph.hpp"
+#include "harmonics/int8_math.hpp"
 #include "harmonics/training.hpp"
 
 namespace harmonics {
@@ -324,6 +325,35 @@ inline void apply_sgd_update(HTensor& param, const HTensor& grad, float lr) {
     default:
         break;
     }
+}
+
+/** Apply an integer SGD update with a right-shift learning rate. */
+inline void apply_integer_sgd_update(HTensor& param, const HTensor& grad, uint8_t lr_shift) {
+    if (param.dtype() != HTensor::DType::UInt8 || grad.dtype() != HTensor::DType::Int32 ||
+        param.shape() != grad.shape())
+        return;
+
+    if (param.data().empty())
+        param.data().assign(grad.data().size() / sizeof(int32_t), std::byte{});
+
+    auto* p = reinterpret_cast<int8_t*>(param.data().data());
+    const auto* g = reinterpret_cast<const int32_t*>(grad.data().data());
+    std::size_t n = param.data().size();
+    for (std::size_t i = 0; i < n; ++i) {
+        int32_t delta = g[i] >> lr_shift;
+        int32_t updated = static_cast<int32_t>(p[i]) - delta;
+        if (updated > 127)
+            updated = 127;
+        else if (updated < -128)
+            updated = -128;
+        p[i] = static_cast<int8_t>(updated);
+    }
+}
+
+/** Apply an integer SGD update using a shift schedule. */
+inline void apply_integer_sgd_update(HTensor& param, const HTensor& grad,
+                                     const StepDecayShiftSchedule& sched, std::size_t step) {
+    apply_integer_sgd_update(param, grad, sched(step));
 }
 
 /**
@@ -789,30 +819,37 @@ inline CycleState HarmonicGraph::fit(std::chrono::duration<Rep, Period> duration
             ++stall;
         }
         ++step;
+        uint8_t lr_shift = options.lr_schedule(step - 1);
+        float lr_used = options.learning_rate;
+        if (options.lr_schedule_fp)
+            lr_used = options.lr_schedule_fp(step - 1);
         for (std::size_t i = 0; i < params.size(); ++i)
             if (!accum[i].shape().empty()) {
                 scale_tensor_inplace(accum[i], 1.0f / static_cast<float>(accum_count));
                 clip_tensor(accum[i], options.grad_clip);
                 switch (options.optimizer) {
                 case Optimizer::SGD:
-                    apply_sgd_update(params[i], accum[i], options.learning_rate);
+                    if (params[i].dtype() == HTensor::DType::UInt8 &&
+                        accum[i].dtype() == HTensor::DType::Int32) {
+                        apply_integer_sgd_update(params[i], accum[i], lr_shift);
+                        lr_used = 1.0f / static_cast<float>(1u << lr_shift);
+                    } else {
+                        apply_sgd_update(params[i], accum[i], lr_used);
+                    }
                     break;
                 case Optimizer::Adam:
-                    apply_adam_update(params[i], accum[i], opt1[i], opt2[i], step,
-                                      options.learning_rate);
+                    apply_adam_update(params[i], accum[i], opt1[i], opt2[i], step, lr_used);
                     break;
                 case Optimizer::AdamW:
-                    apply_adamw_update(params[i], accum[i], opt1[i], opt2[i], step,
-                                       options.learning_rate, 0.9f, 0.999f, 1e-8f,
-                                       options.weight_decay);
+                    apply_adamw_update(params[i], accum[i], opt1[i], opt2[i], step, lr_used, 0.9f,
+                                       0.999f, 1e-8f, options.weight_decay);
                     break;
                 case Optimizer::LAMB:
-                    apply_lamb_update(params[i], accum[i], opt1[i], opt2[i], step,
-                                      options.learning_rate, 0.9f, 0.999f, 1e-8f,
-                                      options.weight_decay);
+                    apply_lamb_update(params[i], accum[i], opt1[i], opt2[i], step, lr_used, 0.9f,
+                                      0.999f, 1e-8f, options.weight_decay);
                     break;
                 case Optimizer::RMSProp:
-                    apply_rmsprop_update(params[i], accum[i], opt1[i], options.learning_rate);
+                    apply_rmsprop_update(params[i], accum[i], opt1[i], lr_used);
                     break;
                 }
                 zero_tensor(accum[i]);
@@ -821,7 +858,7 @@ inline CycleState HarmonicGraph::fit(std::chrono::duration<Rep, Period> duration
         if (!rt.state().weights.empty() && !rt.state().weights[0].data().empty())
             loss = *reinterpret_cast<const float*>(rt.state().weights[0].data().data());
         if (options.progress)
-            options.progress(step, norm, loss, options.learning_rate);
+            options.progress(step, norm, loss, lr_used);
         accum_count = 0;
     };
     do {
@@ -875,30 +912,37 @@ inline CycleState HarmonicGraph::fit(std::size_t epochs, std::shared_ptr<Precisi
             ++stall;
         }
         ++step;
+        uint8_t lr_shift = options.lr_schedule(step - 1);
+        float lr_used = options.learning_rate;
+        if (options.lr_schedule_fp)
+            lr_used = options.lr_schedule_fp(step - 1);
         for (std::size_t j = 0; j < params.size(); ++j)
             if (!accum[j].shape().empty()) {
                 scale_tensor_inplace(accum[j], 1.0f / static_cast<float>(accum_count));
                 clip_tensor(accum[j], options.grad_clip);
                 switch (options.optimizer) {
                 case Optimizer::SGD:
-                    apply_sgd_update(params[j], accum[j], options.learning_rate);
+                    if (params[j].dtype() == HTensor::DType::UInt8 &&
+                        accum[j].dtype() == HTensor::DType::Int32) {
+                        apply_integer_sgd_update(params[j], accum[j], lr_shift);
+                        lr_used = 1.0f / static_cast<float>(1u << lr_shift);
+                    } else {
+                        apply_sgd_update(params[j], accum[j], lr_used);
+                    }
                     break;
                 case Optimizer::Adam:
-                    apply_adam_update(params[j], accum[j], opt1[j], opt2[j], step,
-                                      options.learning_rate);
+                    apply_adam_update(params[j], accum[j], opt1[j], opt2[j], step, lr_used);
                     break;
                 case Optimizer::AdamW:
-                    apply_adamw_update(params[j], accum[j], opt1[j], opt2[j], step,
-                                       options.learning_rate, 0.9f, 0.999f, 1e-8f,
-                                       options.weight_decay);
+                    apply_adamw_update(params[j], accum[j], opt1[j], opt2[j], step, lr_used, 0.9f,
+                                       0.999f, 1e-8f, options.weight_decay);
                     break;
                 case Optimizer::LAMB:
-                    apply_lamb_update(params[j], accum[j], opt1[j], opt2[j], step,
-                                      options.learning_rate, 0.9f, 0.999f, 1e-8f,
-                                      options.weight_decay);
+                    apply_lamb_update(params[j], accum[j], opt1[j], opt2[j], step, lr_used, 0.9f,
+                                      0.999f, 1e-8f, options.weight_decay);
                     break;
                 case Optimizer::RMSProp:
-                    apply_rmsprop_update(params[j], accum[j], opt1[j], options.learning_rate);
+                    apply_rmsprop_update(params[j], accum[j], opt1[j], lr_used);
                     break;
                 }
                 zero_tensor(accum[j]);
@@ -907,7 +951,7 @@ inline CycleState HarmonicGraph::fit(std::size_t epochs, std::shared_ptr<Precisi
         if (!rt.state().weights.empty() && !rt.state().weights[0].data().empty())
             loss = *reinterpret_cast<const float*>(rt.state().weights[0].data().data());
         if (options.progress)
-            options.progress(step, norm, loss, options.learning_rate);
+            options.progress(step, norm, loss, lr_used);
         accum_count = 0;
     };
     for (std::size_t i = 0; i < count; ++i) {
@@ -957,30 +1001,37 @@ HarmonicGraph::fit_until(StopPredicate stop, std::shared_ptr<PrecisionPolicy> po
             ++stall;
         }
         ++step;
+        uint8_t lr_shift = options.lr_schedule(step - 1);
+        float lr_used = options.learning_rate;
+        if (options.lr_schedule_fp)
+            lr_used = options.lr_schedule_fp(step - 1);
         for (std::size_t i = 0; i < params.size(); ++i)
             if (!accum[i].shape().empty()) {
                 scale_tensor_inplace(accum[i], 1.0f / static_cast<float>(accum_count));
                 clip_tensor(accum[i], options.grad_clip);
                 switch (options.optimizer) {
                 case Optimizer::SGD:
-                    apply_sgd_update(params[i], accum[i], options.learning_rate);
+                    if (params[i].dtype() == HTensor::DType::UInt8 &&
+                        accum[i].dtype() == HTensor::DType::Int32) {
+                        apply_integer_sgd_update(params[i], accum[i], lr_shift);
+                        lr_used = 1.0f / static_cast<float>(1u << lr_shift);
+                    } else {
+                        apply_sgd_update(params[i], accum[i], lr_used);
+                    }
                     break;
                 case Optimizer::Adam:
-                    apply_adam_update(params[i], accum[i], opt1[i], opt2[i], step,
-                                      options.learning_rate);
+                    apply_adam_update(params[i], accum[i], opt1[i], opt2[i], step, lr_used);
                     break;
                 case Optimizer::AdamW:
-                    apply_adamw_update(params[i], accum[i], opt1[i], opt2[i], step,
-                                       options.learning_rate, 0.9f, 0.999f, 1e-8f,
-                                       options.weight_decay);
+                    apply_adamw_update(params[i], accum[i], opt1[i], opt2[i], step, lr_used, 0.9f,
+                                       0.999f, 1e-8f, options.weight_decay);
                     break;
                 case Optimizer::LAMB:
-                    apply_lamb_update(params[i], accum[i], opt1[i], opt2[i], step,
-                                      options.learning_rate, 0.9f, 0.999f, 1e-8f,
-                                      options.weight_decay);
+                    apply_lamb_update(params[i], accum[i], opt1[i], opt2[i], step, lr_used, 0.9f,
+                                      0.999f, 1e-8f, options.weight_decay);
                     break;
                 case Optimizer::RMSProp:
-                    apply_rmsprop_update(params[i], accum[i], opt1[i], options.learning_rate);
+                    apply_rmsprop_update(params[i], accum[i], opt1[i], lr_used);
                     break;
                 }
                 zero_tensor(accum[i]);
@@ -989,7 +1040,7 @@ HarmonicGraph::fit_until(StopPredicate stop, std::shared_ptr<PrecisionPolicy> po
         if (!rt.state().weights.empty() && !rt.state().weights[0].data().empty())
             loss = *reinterpret_cast<const float*>(rt.state().weights[0].data().data());
         if (options.progress)
-            options.progress(step, norm, loss, options.learning_rate);
+            options.progress(step, norm, loss, lr_used);
         accum_count = 0;
     };
     do {

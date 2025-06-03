@@ -126,8 +126,11 @@ inline std::vector<HarmonicGraph> auto_partition(const HarmonicGraph& g,
     };
 
     std::vector<double> weights(parts, 1.0);
-    for (std::size_t i = 0; i < parts; ++i)
-        weights[i] = backend_weight(deploy.partitions[i].backend);
+    for (std::size_t i = 0; i < parts; ++i) {
+        double w = backend_weight(deploy.partitions[i].backend);
+        w *= deploy.partitions[i].weight;
+        weights[i] = w;
+    }
 
     double total = 0.0;
     for (double w : weights)

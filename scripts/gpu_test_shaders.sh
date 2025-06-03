@@ -52,14 +52,17 @@ cat <<EOT > "$TMPDIR/s.txt"
 0 0 0 0
 EOT
 
-SHADERS="l2_distance relu sigmoid barycentric_scores cross_entropy_loss fully_connected sgd rmsprop adam"
+SHADERS="l2_distance relu sigmoid selu prelu barycentric_scores cross_entropy_loss mse_loss fully_connected sgd rmsprop adam"
 
 declare -A EXPECTED
 EXPECTED[l2_distance]="2.82843"
 EXPECTED[relu]="1 2 3"
 EXPECTED[sigmoid]="0.731059 0.880797 0.952574"
+EXPECTED[selu]="1.050701 2.101402 3.152103"
+EXPECTED[prelu]="1 2 3"
 EXPECTED[barycentric_scores]="1 2 3"
 EXPECTED[cross_entropy_loss]="3.57628e-07 2.38419e-07 1.19209e-07"
+EXPECTED[mse_loss]="4 0 4"
 EXPECTED[fully_connected]="10"
 EXPECTED[sgd]="0.999 1.999 2.999 3.999"
 EXPECTED[rmsprop]="0.968377 1.96838 2.96838 3.96838"
@@ -70,10 +73,10 @@ for shader in $SHADERS; do
         l2_distance)
             args="--input $TMPDIR/a.txt --input $TMPDIR/b.txt"
             ;;
-        relu|sigmoid|barycentric_scores)
+        relu|sigmoid|selu|prelu|barycentric_scores)
             args="--input $TMPDIR/a.txt"
             ;;
-        cross_entropy_loss)
+        cross_entropy_loss|mse_loss)
             args="--input $TMPDIR/a.txt --input $TMPDIR/b.txt"
             ;;
         fully_connected)

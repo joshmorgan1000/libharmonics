@@ -12,7 +12,7 @@ Within a compile pass each arrow resolves to a shader name. Before invoking the 
 
 ### Persistent cache
 
-When Vulkan support is available the compiled SPIR-V can be written to disk. The directory defaults to `shader_cache/` and can be overridden with the `HARMONICS_SHADER_CACHE` environment variable. Cached files are keyed by a digest of the shader name and reloaded on the next run.
+When Vulkan or CUDA support is available the compiled SPIR-V can be written to disk. The directory defaults to `shader_cache/` and can be overridden with the `HARMONICS_SHADER_CACHE` environment variable. Cached files are keyed by a digest of the shader name and reloaded on the next run.
 
 Clearing the in-memory cache or removing the files forces a fresh compile.
 

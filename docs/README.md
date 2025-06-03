@@ -52,6 +52,8 @@ auto out = g.inference({});
 - [ConstantSlab.md](ConstantSlab.md) – fixed layout for sensor and appendage data.
 - [ClusterDeployment.md](ClusterDeployment.md) – running partitions across multiple machines.
 - [Accelerators.md](Accelerators.md) – CUDA, Vulkan and FPGA back ends.
+- [CudaPipeline.md](CudaPipeline.md) – compute pipeline for the CUDA backend.
+- [Runtime.md#parameter-server-example](Runtime.md#parameter-server-example) – minimal gRPC parameter server example.
 
 ## Plugins & Tools
 
@@ -60,10 +62,11 @@ auto out = g.inference({});
 - [ShaderBuild.md](ShaderBuild.md) – compiling GLSL shaders into the runtime.
 - [RustFFI.md](RustFFI.md) – using Harmonics from Rust.
 - [JavaScriptRuntime.md](JavaScriptRuntime.md) – using Harmonics from Node.js.
+- [PythonBindings.md](PythonBindings.md) – using Harmonics from Python.
 
 ## Quantum
 
-- [Quantum.md](Quantum.md) – simulator, hardware interface and stub.
+- [Quantum.md](Quantum.md) – simulator and hardware interface.
 
 The guides are grouped by topic so related functionality is documented together. Begin with the core guides to understand the overall design and how graphs are created and trained. The data transport and dataset sections cover the various input pipelines and caching helpers. Runtime topics explore distributed execution and accelerator support. Plugin development and graph utilities are documented together so custom functionality can be added with minimal boilerplate. The quantum documentation collects the simulator and hardware notes in one place.
 
@@ -94,7 +97,7 @@ Each topic can be read independently, but they reference each other where featur
 
 ### Contributing documentation
 
-The documentation files are written in Markdown so they can easily be edited in any text editor. When contributing new sections, keep related material in the same file wherever possible. This helps reduce the number of pages and keeps topics together. New documents should only be created when the content would exceed a few hundred lines and cannot logically fit elsewhere. Run `scripts/format.sh` and `scripts/run-tests.sh` before submitting changes.
+The documentation files are written in Markdown so they can easily be edited in any text editor. When contributing new sections, keep related material in the same file wherever possible. This helps reduce the number of pages and keeps topics together. New documents should only be created when the content would exceed a few hundred lines and cannot logically fit elsewhere. Run `scripts/format.sh` and `scripts/run-tests-all.sh` before submitting changes.
 
 ### Keeping the docs concise
 

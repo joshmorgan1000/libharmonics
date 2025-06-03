@@ -193,6 +193,18 @@ TEST(DatasetProducerTest, AugmentProducerTransforms) {
     EXPECT_EQ(d[0], 0.0f * 2.0f);
 }
 
+TEST(DatasetProducerTest, ShardProducerDividesDataset) {
+    auto base = std::make_shared<CountingProducer>(5);
+    harmonics::ShardProducer shard{base, 1, 2};
+    EXPECT_EQ(shard.size(), 2u);
+    auto a = shard.next();
+    auto b = shard.next();
+    auto d1 = reinterpret_cast<const float*>(a.data().data());
+    auto d2 = reinterpret_cast<const float*>(b.data().data());
+    EXPECT_EQ(d1[0], 3.f);
+    EXPECT_EQ(d2[0], 4.f);
+}
+
 TEST(DatasetProducerTest, Hdf5ProducerRoundtrip) {
     const char* path = "hdf5_test.bin";
     {

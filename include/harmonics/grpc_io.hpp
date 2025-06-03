@@ -1,111 +1,250 @@
 #pragma once
 
-#include "harmonics/net_utils.hpp"
 #include "harmonics/stream_io.hpp"
+#include "tensor_stream.grpc.pb.h"
 
+#include <chrono>
+#include <condition_variable>
+#include <grpcpp/grpcpp.h>
 #include <memory>
-#include <sstream>
-#include <stdexcept>
+#include <mutex>
+#include <queue>
 #include <string>
 
 namespace harmonics {
 
+constexpr char kGrpcMagicKey[] = "magic";
+constexpr char kGrpcMagicValue[] = "HGRP";
+
 class GrpcProducer : public Producer {
   public:
-    explicit GrpcProducer(int fd) : fd_{fd} {}
-    GrpcProducer(const std::string& host, unsigned short port) {
-        net_init();
-        fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
-        if (fd_ == invalid_socket)
-            throw std::runtime_error("failed to create socket");
-        sockaddr_in addr{};
-        addr.sin_family = AF_INET;
-        if (::inet_pton(AF_INET, host.c_str(), &addr.sin_addr) != 1) {
-            net_close(fd_);
-            throw std::runtime_error("invalid address");
-        }
-        addr.sin_port = htons(port);
-        if (::connect(fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-            net_close(fd_);
-            throw std::runtime_error("failed to connect");
-        }
-    }
-    ~GrpcProducer() override {
-        if (fd_ != invalid_socket)
-            net_close(fd_);
+    GrpcProducer() = default;
+    GrpcProducer(const std::string& host, unsigned short port, int max_message_size = 0,
+                 int timeout_ms = 0)
+        : addr_{host + ":" + std::to_string(port)}, max_message_size_{max_message_size},
+          timeout_ms_{timeout_ms} {
+        connect();
     }
 
     HTensor next() override {
-        std::uint8_t flag = 0;
-        if (!read_exact(&flag, 1))
-            return {};
-        std::uint32_t len_be = 0;
-        if (!read_exact(&len_be, 4))
-            return {};
-        std::uint32_t len = ntohl(len_be);
-        std::string buf(len, '\0');
-        if (!read_exact(buf.data(), len))
-            return {};
-        std::istringstream in(buf);
+        ensure_reader();
+        TensorData resp;
+        if (!reader_->Read(&resp)) {
+            reconnect();
+            if (!reader_ || !reader_->Read(&resp))
+                throw std::runtime_error("gRPC PopTensor failed");
+        }
+        std::istringstream in(resp.serialized());
         return read_tensor(in);
     }
 
     std::size_t size() const override { return 0; }
 
   private:
-    socket_t fd_{invalid_socket};
-    bool read_exact(void* dst, std::size_t bytes) {
-        std::size_t off = 0;
-        while (off < bytes) {
-            auto n =
-                net_read(fd_, reinterpret_cast<char*>(dst) + off, static_cast<int>(bytes - off));
-            if (n <= 0)
-                return false;
-            off += static_cast<std::size_t>(n);
+    void connect() {
+        grpc::ChannelArguments args;
+        if (max_message_size_ > 0) {
+            args.SetMaxReceiveMessageSize(max_message_size_);
+            args.SetMaxSendMessageSize(max_message_size_);
         }
-        return true;
+        channel_ = grpc::CreateCustomChannel(addr_, grpc::InsecureChannelCredentials(), args);
+        stub_ = TensorService::NewStub(channel_);
     }
+
+    void start_stream() {
+        ctx_ = std::make_unique<grpc::ClientContext>();
+        ctx_->AddMetadata(kGrpcMagicKey, kGrpcMagicValue);
+        if (timeout_ms_ > 0)
+            ctx_->set_deadline(std::chrono::system_clock::now() +
+                               std::chrono::milliseconds(timeout_ms_));
+        google::protobuf::Empty req;
+        reader_ = stub_->PopTensor(ctx_.get(), req);
+    }
+
+    void ensure_reader() {
+        if (!reader_)
+            start_stream();
+    }
+
+    void reconnect() {
+        reader_.reset();
+        ctx_.reset();
+        connect();
+        start_stream();
+    }
+
+    std::string addr_{};
+    int max_message_size_{0};
+    int timeout_ms_{0};
+    std::shared_ptr<grpc::Channel> channel_{};
+    std::unique_ptr<TensorService::Stub> stub_{};
+    std::unique_ptr<grpc::ClientContext> ctx_{};
+    std::unique_ptr<grpc::ClientReader<TensorData>> reader_{};
 };
 
 class GrpcConsumer : public Consumer {
   public:
-    explicit GrpcConsumer(int fd) : fd_{fd} {}
-    GrpcConsumer(const std::string& host, unsigned short port) {
-        net_init();
-        fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
-        if (fd_ == invalid_socket)
-            throw std::runtime_error("failed to create socket");
-        sockaddr_in addr{};
-        addr.sin_family = AF_INET;
-        if (::inet_pton(AF_INET, host.c_str(), &addr.sin_addr) != 1) {
-            net_close(fd_);
-            throw std::runtime_error("invalid address");
-        }
-        addr.sin_port = htons(port);
-        if (::connect(fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-            net_close(fd_);
-            throw std::runtime_error("failed to connect");
-        }
-    }
-    ~GrpcConsumer() override {
-        if (fd_ != invalid_socket)
-            net_close(fd_);
+    GrpcConsumer() = default;
+    GrpcConsumer(const std::string& host, unsigned short port, int max_message_size = 0,
+                 int timeout_ms = 0)
+        : addr_{host + ":" + std::to_string(port)}, max_message_size_{max_message_size},
+          timeout_ms_{timeout_ms} {
+        connect();
+        start_stream();
     }
 
     void push(const HTensor& t) override {
+        ensure_writer();
+        TensorData data;
         std::ostringstream out;
         write_tensor(out, t);
-        auto str = out.str();
-        std::uint8_t flag = 0;
-        std::uint32_t len = static_cast<std::uint32_t>(str.size());
-        std::uint32_t len_be = htonl(len);
-        net_write(fd_, &flag, 1);
-        net_write(fd_, &len_be, 4);
-        net_write(fd_, str.data(), static_cast<int>(str.size()));
+        data.set_serialized(out.str());
+        if (!writer_->Write(data)) {
+            reconnect();
+            if (!writer_->Write(data))
+                throw std::runtime_error("gRPC PushTensor failed");
+        }
     }
 
   private:
-    socket_t fd_{invalid_socket};
+    void connect() {
+        grpc::ChannelArguments args;
+        if (max_message_size_ > 0) {
+            args.SetMaxReceiveMessageSize(max_message_size_);
+            args.SetMaxSendMessageSize(max_message_size_);
+        }
+        channel_ = grpc::CreateCustomChannel(addr_, grpc::InsecureChannelCredentials(), args);
+        stub_ = TensorService::NewStub(channel_);
+    }
+
+    void start_stream() {
+        ctx_ = std::make_unique<grpc::ClientContext>();
+        ctx_->AddMetadata(kGrpcMagicKey, kGrpcMagicValue);
+        if (timeout_ms_ > 0)
+            ctx_->set_deadline(std::chrono::system_clock::now() +
+                               std::chrono::milliseconds(timeout_ms_));
+        writer_response_ = std::make_unique<google::protobuf::Empty>();
+        writer_ = stub_->PushTensor(ctx_.get(), writer_response_.get());
+    }
+
+    void ensure_writer() {
+        if (!writer_)
+            start_stream();
+    }
+
+    void reconnect() {
+        writer_.reset();
+        ctx_.reset();
+        connect();
+        start_stream();
+    }
+
+    std::string addr_{};
+    int max_message_size_{0};
+    int timeout_ms_{0};
+    std::shared_ptr<grpc::Channel> channel_{};
+    std::unique_ptr<TensorService::Stub> stub_{};
+    std::unique_ptr<grpc::ClientContext> ctx_{};
+    std::unique_ptr<google::protobuf::Empty> writer_response_{};
+    std::unique_ptr<grpc::ClientWriter<TensorData>> writer_{};
+};
+
+class GrpcServer {
+  public:
+    explicit GrpcServer(unsigned short port = 0, int max_message_size = 0) : service_{*this} {
+        std::string addr = "0.0.0.0:" + std::to_string(port);
+        grpc::ServerBuilder builder;
+        builder.AddListeningPort(addr, grpc::InsecureServerCredentials(), &port_);
+        if (max_message_size > 0) {
+            builder.SetMaxReceiveMessageSize(max_message_size);
+            builder.SetMaxSendMessageSize(max_message_size);
+        }
+        builder.RegisterService(&service_);
+        server_ = builder.BuildAndStart();
+    }
+
+    ~GrpcServer() {
+        if (server_)
+            server_->Shutdown();
+    }
+
+    unsigned short port() const { return static_cast<unsigned short>(port_); }
+
+    void push(const HTensor& t) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        queue_.push(t);
+        cv_.notify_all();
+    }
+
+    HTensor pop() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        cv_.wait(lock, [&] { return !queue_.empty(); });
+        HTensor t = queue_.front();
+        queue_.pop();
+        return t;
+    }
+
+  private:
+    class ServiceImpl : public TensorService::Service {
+      public:
+        explicit ServiceImpl(GrpcServer& parent) : parent_(parent) {}
+
+        bool valid_magic(grpc::ServerContext* ctx) {
+            auto it = ctx->client_metadata().find(kGrpcMagicKey);
+            return it != ctx->client_metadata().end() &&
+                   std::string(it->second.data(), it->second.size()) == kGrpcMagicValue;
+        }
+
+        grpc::Status PushTensor(grpc::ServerContext* ctx, grpc::ServerReader<TensorData>* reader,
+                                google::protobuf::Empty*) override {
+            if (!valid_magic(ctx))
+                return grpc::Status(grpc::StatusCode::PERMISSION_DENIED, "bad handshake");
+            TensorData req;
+            while (reader->Read(&req)) {
+                std::istringstream in(req.serialized());
+                auto t = read_tensor(in);
+                {
+                    std::lock_guard<std::mutex> lock(parent_.mutex_);
+                    parent_.queue_.push(std::move(t));
+                }
+                parent_.cv_.notify_all();
+            }
+            return grpc::Status::OK;
+        }
+
+        grpc::Status PopTensor(grpc::ServerContext* ctx, const google::protobuf::Empty*,
+                               grpc::ServerWriter<TensorData>* writer) override {
+            if (!valid_magic(ctx))
+                return grpc::Status(grpc::StatusCode::PERMISSION_DENIED, "bad handshake");
+            while (!ctx->IsCancelled()) {
+                std::unique_lock<std::mutex> lock(parent_.mutex_);
+                parent_.cv_.wait(lock,
+                                 [&] { return !parent_.queue_.empty() || ctx->IsCancelled(); });
+                if (ctx->IsCancelled())
+                    break;
+                HTensor t = parent_.queue_.front();
+                parent_.queue_.pop();
+                lock.unlock();
+                TensorData resp;
+                std::ostringstream out;
+                write_tensor(out, t);
+                resp.set_serialized(out.str());
+                if (!writer->Write(resp))
+                    break;
+            }
+            return grpc::Status::OK;
+        }
+
+      private:
+        GrpcServer& parent_;
+    };
+
+    std::unique_ptr<grpc::Server> server_{};
+    int port_{0};
+    ServiceImpl service_;
+    std::mutex mutex_{};
+    std::condition_variable cv_{};
+    std::queue<HTensor> queue_{};
 };
 
 } // namespace harmonics

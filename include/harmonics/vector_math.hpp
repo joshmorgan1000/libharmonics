@@ -17,7 +17,16 @@
 #include <algorithm>
 #include <cmath>
 #include <numeric>
+#include <type_traits>
 #include <vector>
+
+#include "harmonics/config.hpp"
+#if HARMONICS_HAS_WASM_SIMD
+#include <wasm_simd128.h>
+#endif
+#if HARMONICS_HAS_SSE2
+#include <immintrin.h>
+#endif
 
 namespace harmonics {
 
@@ -38,8 +47,47 @@ template <typename T> using Vector = std::vector<T>;
 template <typename T> inline Vector<T> vector_add(const Vector<T>& a, const Vector<T>& b) {
     std::size_t n = std::min(a.size(), b.size());
     Vector<T> out(n);
-    for (std::size_t i = 0; i < n; ++i)
-        out[i] = a[i] + b[i];
+    if constexpr (std::is_same_v<T, float>) {
+#if HARMONICS_HAS_WASM_SIMD
+        std::size_t i = 0;
+        for (; i + 4 <= n; i += 4) {
+            v128_t va = wasm_v128_load(&a[i]);
+            v128_t vb = wasm_v128_load(&b[i]);
+            wasm_v128_store(&out[i], wasm_f32x4_add(va, vb));
+        }
+        for (; i < n; ++i)
+            out[i] = a[i] + b[i];
+#elif HARMONICS_HAS_SSE2
+        std::size_t i = 0;
+        for (; i + 4 <= n; i += 4) {
+            __m128 va = _mm_loadu_ps(&a[i]);
+            __m128 vb = _mm_loadu_ps(&b[i]);
+            _mm_storeu_ps(&out[i], _mm_add_ps(va, vb));
+        }
+        for (; i < n; ++i)
+            out[i] = a[i] + b[i];
+#else
+        for (std::size_t i = 0; i < n; ++i)
+            out[i] = a[i] + b[i];
+#endif
+    } else if constexpr (std::is_same_v<T, double>) {
+#if HARMONICS_HAS_SSE2
+        std::size_t i = 0;
+        for (; i + 2 <= n; i += 2) {
+            __m128d va = _mm_loadu_pd(&a[i]);
+            __m128d vb = _mm_loadu_pd(&b[i]);
+            _mm_storeu_pd(&out[i], _mm_add_pd(va, vb));
+        }
+        for (; i < n; ++i)
+            out[i] = a[i] + b[i];
+#else
+        for (std::size_t i = 0; i < n; ++i)
+            out[i] = a[i] + b[i];
+#endif
+    } else {
+        for (std::size_t i = 0; i < n; ++i)
+            out[i] = a[i] + b[i];
+    }
     return out;
 }
 
@@ -56,8 +104,47 @@ template <typename T> inline Vector<T> vector_add(const Vector<T>& a, const Vect
 template <typename T> inline Vector<T> vector_subtract(const Vector<T>& a, const Vector<T>& b) {
     std::size_t n = std::min(a.size(), b.size());
     Vector<T> out(n);
-    for (std::size_t i = 0; i < n; ++i)
-        out[i] = a[i] - b[i];
+    if constexpr (std::is_same_v<T, float>) {
+#if HARMONICS_HAS_WASM_SIMD
+        std::size_t i = 0;
+        for (; i + 4 <= n; i += 4) {
+            v128_t va = wasm_v128_load(&a[i]);
+            v128_t vb = wasm_v128_load(&b[i]);
+            wasm_v128_store(&out[i], wasm_f32x4_sub(va, vb));
+        }
+        for (; i < n; ++i)
+            out[i] = a[i] - b[i];
+#elif HARMONICS_HAS_SSE2
+        std::size_t i = 0;
+        for (; i + 4 <= n; i += 4) {
+            __m128 va = _mm_loadu_ps(&a[i]);
+            __m128 vb = _mm_loadu_ps(&b[i]);
+            _mm_storeu_ps(&out[i], _mm_sub_ps(va, vb));
+        }
+        for (; i < n; ++i)
+            out[i] = a[i] - b[i];
+#else
+        for (std::size_t i = 0; i < n; ++i)
+            out[i] = a[i] - b[i];
+#endif
+    } else if constexpr (std::is_same_v<T, double>) {
+#if HARMONICS_HAS_SSE2
+        std::size_t i = 0;
+        for (; i + 2 <= n; i += 2) {
+            __m128d va = _mm_loadu_pd(&a[i]);
+            __m128d vb = _mm_loadu_pd(&b[i]);
+            _mm_storeu_pd(&out[i], _mm_sub_pd(va, vb));
+        }
+        for (; i < n; ++i)
+            out[i] = a[i] - b[i];
+#else
+        for (std::size_t i = 0; i < n; ++i)
+            out[i] = a[i] - b[i];
+#endif
+    } else {
+        for (std::size_t i = 0; i < n; ++i)
+            out[i] = a[i] - b[i];
+    }
     return out;
 }
 
@@ -70,8 +157,47 @@ template <typename T> inline Vector<T> vector_subtract(const Vector<T>& a, const
  */
 template <typename T, typename S> inline Vector<T> vector_scale(const Vector<T>& v, S s) {
     Vector<T> out(v.size());
-    for (std::size_t i = 0; i < v.size(); ++i)
-        out[i] = static_cast<T>(v[i] * s);
+    if constexpr (std::is_same_v<T, float> && std::is_floating_point_v<S>) {
+#if HARMONICS_HAS_WASM_SIMD
+        v128_t vs = wasm_f32x4_splat(static_cast<float>(s));
+        std::size_t i = 0;
+        for (; i + 4 <= v.size(); i += 4) {
+            v128_t va = wasm_v128_load(&v[i]);
+            wasm_v128_store(&out[i], wasm_f32x4_mul(va, vs));
+        }
+        for (; i < v.size(); ++i)
+            out[i] = static_cast<float>(v[i] * s);
+#elif HARMONICS_HAS_SSE2
+        __m128 vs = _mm_set1_ps(static_cast<float>(s));
+        std::size_t i = 0;
+        for (; i + 4 <= v.size(); i += 4) {
+            __m128 va = _mm_loadu_ps(&v[i]);
+            _mm_storeu_ps(&out[i], _mm_mul_ps(va, vs));
+        }
+        for (; i < v.size(); ++i)
+            out[i] = static_cast<float>(v[i] * s);
+#else
+        for (std::size_t i = 0; i < v.size(); ++i)
+            out[i] = static_cast<T>(v[i] * s);
+#endif
+    } else if constexpr (std::is_same_v<T, double> && std::is_floating_point_v<S>) {
+#if HARMONICS_HAS_SSE2
+        __m128d vs = _mm_set1_pd(static_cast<double>(s));
+        std::size_t i = 0;
+        for (; i + 2 <= v.size(); i += 2) {
+            __m128d va = _mm_loadu_pd(&v[i]);
+            _mm_storeu_pd(&out[i], _mm_mul_pd(va, vs));
+        }
+        for (; i < v.size(); ++i)
+            out[i] = static_cast<double>(v[i] * s);
+#else
+        for (std::size_t i = 0; i < v.size(); ++i)
+            out[i] = static_cast<T>(v[i] * s);
+#endif
+    } else {
+        for (std::size_t i = 0; i < v.size(); ++i)
+            out[i] = static_cast<T>(v[i] * s);
+    }
     return out;
 }
 
@@ -88,10 +214,69 @@ template <typename T, typename S> inline Vector<T> vector_scale(const Vector<T>&
  */
 template <typename T> inline T dot_product(const Vector<T>& a, const Vector<T>& b) {
     std::size_t n = std::min(a.size(), b.size());
-    T result = T{};
-    for (std::size_t i = 0; i < n; ++i)
-        result += a[i] * b[i];
-    return result;
+    if constexpr (std::is_same_v<T, float>) {
+        float result = 0.0f;
+#if HARMONICS_HAS_WASM_SIMD
+        v128_t acc = wasm_f32x4_splat(0.0f);
+        std::size_t i = 0;
+        for (; i + 4 <= n; i += 4) {
+            v128_t va = wasm_v128_load(&a[i]);
+            v128_t vb = wasm_v128_load(&b[i]);
+            acc = wasm_f32x4_add(acc, wasm_f32x4_mul(va, vb));
+        }
+        float tmp[4];
+        wasm_v128_store(tmp, acc);
+        result = tmp[0] + tmp[1] + tmp[2] + tmp[3];
+        for (; i < n; ++i)
+            result += a[i] * b[i];
+        return result;
+#elif HARMONICS_HAS_SSE2
+        __m128 acc = _mm_setzero_ps();
+        std::size_t i = 0;
+        for (; i + 4 <= n; i += 4) {
+            __m128 va = _mm_loadu_ps(&a[i]);
+            __m128 vb = _mm_loadu_ps(&b[i]);
+            acc = _mm_add_ps(acc, _mm_mul_ps(va, vb));
+        }
+        alignas(16) float tmp[4];
+        _mm_store_ps(tmp, acc);
+        result = tmp[0] + tmp[1] + tmp[2] + tmp[3];
+        for (; i < n; ++i)
+            result += a[i] * b[i];
+        return result;
+#else
+        float result2 = 0.0f;
+        for (std::size_t i = 0; i < n; ++i)
+            result2 += a[i] * b[i];
+        return result2;
+#endif
+    } else if constexpr (std::is_same_v<T, double>) {
+#if HARMONICS_HAS_SSE2
+        __m128d acc = _mm_setzero_pd();
+        std::size_t i = 0;
+        for (; i + 2 <= n; i += 2) {
+            __m128d va = _mm_loadu_pd(&a[i]);
+            __m128d vb = _mm_loadu_pd(&b[i]);
+            acc = _mm_add_pd(acc, _mm_mul_pd(va, vb));
+        }
+        alignas(16) double tmp[2];
+        _mm_store_pd(tmp, acc);
+        double result = tmp[0] + tmp[1];
+        for (; i < n; ++i)
+            result += a[i] * b[i];
+        return static_cast<T>(result);
+#else
+        double result = 0.0;
+        for (std::size_t i = 0; i < n; ++i)
+            result += a[i] * b[i];
+        return static_cast<T>(result);
+#endif
+    } else {
+        T result = T{};
+        for (std::size_t i = 0; i < n; ++i)
+            result += a[i] * b[i];
+        return result;
+    }
 }
 
 /**

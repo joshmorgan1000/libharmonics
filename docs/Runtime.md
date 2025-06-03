@@ -21,10 +21,15 @@ For cross-process deployments each partition may instead use `RemoteScheduler`. 
 ```cpp
 using harmonics::RemoteBinding;
 std::vector<RemoteBinding> prod = {{"output", "hostA", 9000}};
-std::vector<RemoteBinding> cons = {{"input", "hostB", 9001}};
+std::vector<RemoteBinding> cons = {
+    {"input", "hostB", 9001, RemoteTransport::TCP, true, 0}}; // compress tensors
 RemoteScheduler sched(part, prod, cons);
 sched.fit(1);
 ```
+
+Set `compress` in a binding to enable Zstandard compression for that connection.
+Use `max_message_size` with gRPC or Flight transports to control the maximum
+allowed message size in bytes.
 
 Multiple remote schedulers can be combined to form a larger distributed graph, allowing flexible placement of partitions across machines.
 
@@ -35,11 +40,13 @@ The multi-accelerator scheduler automatically partitions a `HarmonicGraph` acros
 ## Automatic partitioning
 
 Use `auto_partition` with a `DeploymentDescriptor` that lists the desired backends for each partition. Layers are distributed proportionally based on the relative weight of each backend.
+The `weight` field of `PartitionOptions` further adjusts this ratio so load can
+be balanced more precisely across heterogeneous devices.
 
 ```cpp
 harmonics::DeploymentDescriptor deploy;
 deploy.partitions = {
-    {harmonics::Backend::GPU},
+    {harmonics::Backend::GPU, "", 0, std::nullopt, 1.5}, // GPU with higher weight
     {harmonics::Backend::FPGA},
     {harmonics::Backend::CPU}
 };
@@ -48,41 +55,27 @@ auto parts = auto_partition(graph, deploy);
 harmonics::DistributedScheduler sched(parts, deploy);
 ```
 
+By default the scheduler assigns weight `4.0` to GPU partitions, `2.0` to FPGA
+partitions and `1.0` to CPU partitions. Custom weights override these defaults.
+
 During `step()` or `fit()` the scheduler executes each partition in sequence and forwards boundary tensors through in-memory buses. When `deploy.backend` is set to `Backend::Auto`, the helper `select_accelerator_backend()` chooses the best available device when no explicit backend is specified.
 
 ## Deployment options
 
-Each entry in `deploy.partitions` can override the backend and device index for its partition. GPU partitions may set `device_index` while FPGA partitions follow the OpenCL platform selection rules.
+Each entry in `deploy.partitions` can override the backend and device index for its partition. GPU partitions may set `device_index` while FPGA partitions may use `fpga_device_index` or fall back to the OpenCL platform selection rules.
 
 ```cpp
 harmonics::DeploymentDescriptor d;
 d.partitions.resize(2);
 d.partitions[0].backend = harmonics::Backend::GPU;
 d.partitions[0].device_index = 1;   // second GPU
+d.partitions[0].weight = 2.0;       // heavier load on the GPU
 
-d.partitions[1].backend = harmonics::Backend::CPU;
+d.partitions[1].backend = harmonics::Backend::FPGA;
+d.partitions[1].fpga_device_index = 0; // first OpenCL device
 ```
 
 The scheduler also accepts the same `secure` flag as other runtimes so chain-of-custody proofs can be enabled across accelerators.
-
-# Distributed Parameter Server Example
-
-The `distributed_parameter_server.cpp` example illustrates how a basic SGD-style parameter server can be built with the provided gRPC transport. A small tensor is sent from the server to workers, updated with gradients and streamed back.
-
-## Overview
-
-The program defines a simple `ParameterServer` class that holds a single float parameter. Gradients are received over gRPC from a producer, an SGD update is applied and the new parameter is published via a server so workers can pull the latest value.
-
-## Running the example
-
-Build the project with the helper script and execute the example binary from the build directory:
-
-```bash
-./scripts/run-tests.sh
-./build-Release/distributed_parameter_server_example
-```
-
-The program prints the initial value of the parameter, sends a dummy gradient and shows the updated value after the server applies the update.
 
 # Distributed Scheduler Example
 
@@ -99,6 +92,24 @@ Build the project and run the example from the build directory:
 ```
 
 The output shows the dimension of the tensor received by the second partition for each transport.
+
+# Parameter Server Example
+
+The `distributed_parameter_server_example` program implements a minimal
+parameter server using two gRPC streams. One stream distributes the current
+parameters while the other collects gradients from a worker process. The server
+applies the gradient and broadcasts the updated parameter back to the worker.
+
+## Running the example
+
+Build the project and run the example from the build directory:
+
+```bash
+./scripts/run-tests.sh
+./build-Release/distributed_parameter_server_example
+```
+
+The output prints the parameter value before and after applying the gradient.
 
 
 # Runtime Checkpointing

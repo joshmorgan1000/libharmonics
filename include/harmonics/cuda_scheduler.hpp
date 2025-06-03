@@ -1,11 +1,11 @@
 #pragma once
 
 #include "harmonics/core.hpp"
-#include "harmonics/graph.hpp"
-#include "harmonics/gpu_backend.hpp"
-#include "harmonics/precision_policy.hpp"
-#include "harmonics/function_registry.hpp"
 #include "harmonics/cuda_adapter.hpp"
+#include "harmonics/function_registry.hpp"
+#include "harmonics/gpu_backend.hpp"
+#include "harmonics/graph.hpp"
+#include "harmonics/precision_policy.hpp"
 #include <future>
 
 namespace harmonics {
@@ -22,10 +22,8 @@ struct CycleState;
  */
 struct CudaScheduler {
     /// Launch the compiled kernels for one cycle.
-    static void launch(const GpuCycleKernels& kernels, const HarmonicGraph& g,
-                       CycleState& state, PrecisionPolicy& policy);
+    static void launch(const GpuCycleKernels& kernels, const HarmonicGraph& g, CycleState& state,
+                       PrecisionPolicy& policy);
 };
 
 } // namespace harmonics
-
-

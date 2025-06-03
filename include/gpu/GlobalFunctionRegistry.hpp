@@ -35,9 +35,14 @@ inline const std::vector<uint8_t>* shaderData(const std::string& name) {
         {"int4_matmul", &INT4_MATMUL_COMP_ZST},
         {"int3_matmul", &INT3_MATMUL_COMP_ZST},
         {"relu", &RELU_COMP_ZST},
+        {"selu", &SELU_COMP_ZST},
+        {"prelu", &PRELU_COMP_ZST},
         {"rmsprop", &RMSPROP_COMP_ZST},
         {"sgd", &SGD_COMP_ZST},
         {"sigmoid", &SIGMOID_COMP_ZST},
+        {"mse_loss", &MSE_LOSS_COMP_ZST},
+        {"max_pool", nullptr},
+        {"avg_pool", nullptr},
     };
     auto it = table.find(name);
     if (it == table.end())
@@ -187,6 +192,41 @@ inline void registerAllShaders() {
     };
     reg.registerFunction(std::move(sigmoid));
 
+    GPUFunction selu;
+    selu.name = "selu";
+    selu.shader = "selu";
+    selu.cpuFallback = [](const std::vector<GPUDataVariant>& params) -> GPUDataVariant {
+        if (params.size() != 1)
+            throw std::runtime_error("selu expects 1 param");
+        const auto& in = std::get<std::vector<float>>(params[0]);
+        std::vector<float> out(in.size());
+        constexpr float lambda = 1.050701f;
+        constexpr float alpha = 1.67326f;
+        for (size_t i = 0; i < in.size(); ++i) {
+            float v = in[i];
+            out[i] = v > 0.0f ? lambda * v : lambda * (alpha * (std::exp(v) - 1.0f));
+        }
+        return out;
+    };
+    reg.registerFunction(std::move(selu));
+
+    GPUFunction prelu;
+    prelu.name = "prelu";
+    prelu.shader = "prelu";
+    prelu.cpuFallback = [](const std::vector<GPUDataVariant>& params) -> GPUDataVariant {
+        if (params.size() != 1)
+            throw std::runtime_error("prelu expects 1 param");
+        const auto& in = std::get<std::vector<float>>(params[0]);
+        std::vector<float> out(in.size());
+        constexpr float a = 0.25f;
+        for (size_t i = 0; i < in.size(); ++i) {
+            float v = in[i];
+            out[i] = v > 0.0f ? v : a * v;
+        }
+        return out;
+    };
+    reg.registerFunction(std::move(prelu));
+
     GPUFunction bary;
     bary.name = "barycentric_scores";
     bary.shader = "barycentric_scores";
@@ -216,6 +256,25 @@ inline void registerAllShaders() {
     };
     reg.registerFunction(std::move(cel));
 
+    GPUFunction mse;
+    mse.name = "mse_loss";
+    mse.shader = "mse_loss";
+    mse.cpuFallback = [](const std::vector<GPUDataVariant>& params) -> GPUDataVariant {
+        if (params.size() != 2)
+            throw std::runtime_error("mse_loss expects 2 params");
+        const auto& pred = std::get<std::vector<float>>(params[0]);
+        const auto& target = std::get<std::vector<float>>(params[1]);
+        if (pred.size() != target.size())
+            throw std::runtime_error("size mismatch");
+        std::vector<float> out(pred.size());
+        for (size_t i = 0; i < pred.size(); ++i) {
+            float diff = pred[i] - target[i];
+            out[i] = diff * diff;
+        }
+        return out;
+    };
+    reg.registerFunction(std::move(mse));
+
     GPUFunction fc;
     fc.name = "fully_connected";
     fc.shader = "fully_connected";
@@ -232,6 +291,40 @@ inline void registerAllShaders() {
         return std::vector<float>{sum};
     };
     reg.registerFunction(std::move(fc));
+
+    GPUFunction maxp;
+    maxp.name = "max_pool";
+    maxp.shader = "max_pool";
+    maxp.cpuFallback = [](const std::vector<GPUDataVariant>& params) -> GPUDataVariant {
+        if (params.size() != 1)
+            throw std::runtime_error("max_pool expects 1 param");
+        const auto& in = std::get<std::vector<float>>(params[0]);
+        std::vector<float> out(in.size() / 2);
+        for (size_t i = 0; i < out.size(); ++i) {
+            float a = in[i * 2];
+            float b = in[i * 2 + 1];
+            out[i] = a > b ? a : b;
+        }
+        return out;
+    };
+    reg.registerFunction(std::move(maxp));
+
+    GPUFunction avgp;
+    avgp.name = "avg_pool";
+    avgp.shader = "avg_pool";
+    avgp.cpuFallback = [](const std::vector<GPUDataVariant>& params) -> GPUDataVariant {
+        if (params.size() != 1)
+            throw std::runtime_error("avg_pool expects 1 param");
+        const auto& in = std::get<std::vector<float>>(params[0]);
+        std::vector<float> out(in.size() / 2);
+        for (size_t i = 0; i < out.size(); ++i) {
+            float a = in[i * 2];
+            float b = in[i * 2 + 1];
+            out[i] = (a + b) * 0.5f;
+        }
+        return out;
+    };
+    reg.registerFunction(std::move(avgp));
 
     GPUFunction sgd;
     sgd.name = "sgd";

@@ -17,17 +17,20 @@ enum class Backend { CPU, GPU, FPGA, WASM, Auto };
 
 /** Options for a single graph partition. */
 struct PartitionOptions {
-    Backend backend{Backend::CPU};          ///< execution back end
-    std::string target{};                   ///< optional remote target string
-    std::optional<uint32_t> device_index{}; ///< optional GPU device index
+    Backend backend{Backend::CPU};               ///< execution back end
+    std::string target{};                        ///< optional remote target string
+    std::optional<uint32_t> device_index{};      ///< optional GPU device index
+    std::optional<uint32_t> fpga_device_index{}; ///< optional OpenCL device index
+    double weight{1.0};                          ///< relative load balancing weight
 };
 
 /** Descriptor for deploying a HarmonicGraph or its partitions. */
 struct DeploymentDescriptor {
-    Backend backend{Backend::CPU};              ///< default backend for the graph
-    bool secure{false};                         ///< enable chain-of-custody proofs
-    std::optional<uint32_t> gpu_device_index{}; ///< optional GPU device selection
-    std::vector<PartitionOptions> partitions{}; ///< per-partition overrides
+    Backend backend{Backend::CPU};               ///< default backend for the graph
+    bool secure{false};                          ///< enable chain-of-custody proofs
+    std::optional<uint32_t> gpu_device_index{};  ///< optional GPU device selection
+    std::optional<uint32_t> fpga_device_index{}; ///< optional OpenCL device selection
+    std::vector<PartitionOptions> partitions{};  ///< per-partition overrides
 };
 
 inline std::string to_hex(const unsigned char* data, std::size_t len) {

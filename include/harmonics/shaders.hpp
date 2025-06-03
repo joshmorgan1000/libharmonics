@@ -3,6 +3,7 @@
 #include "harmonics/config.hpp"
 #include "harmonics/core.hpp"
 #include "harmonics/function_registry.hpp"
+#include "harmonics/int8_activations.hpp"
 #include <algorithm>
 #include <cmath>
 #include <memory>
@@ -18,6 +19,17 @@ namespace harmonics {
 class ReluActivation : public ActivationFunction {
   public:
     HTensor operator()(const HTensor& x) const override {
+        if (x.dtype() == HTensor::DType::UInt8) {
+            HTensor out{HTensor::DType::UInt8, x.shape()};
+            out.data().resize(x.data().size());
+            const int8_t* in = reinterpret_cast<const int8_t*>(x.data().data());
+            int8_t* p = reinterpret_cast<int8_t*>(out.data().data());
+            const auto& tbl = relu_table();
+            std::size_t n = x.data().size();
+            for (std::size_t i = 0; i < n; ++i)
+                p[i] = tbl[static_cast<uint8_t>(in[i])];
+            return out;
+        }
         if (x.dtype() != HTensor::DType::Float32)
             return x;
         HTensor out{HTensor::DType::Float32, x.shape()};
@@ -46,6 +58,17 @@ class ReluActivation : public ActivationFunction {
 class SigmoidActivation : public ActivationFunction {
   public:
     HTensor operator()(const HTensor& x) const override {
+        if (x.dtype() == HTensor::DType::UInt8) {
+            HTensor out{HTensor::DType::UInt8, x.shape()};
+            out.data().resize(x.data().size());
+            const int8_t* in = reinterpret_cast<const int8_t*>(x.data().data());
+            int8_t* p = reinterpret_cast<int8_t*>(out.data().data());
+            const auto& tbl = hard_sigmoid_table();
+            std::size_t n = x.data().size();
+            for (std::size_t i = 0; i < n; ++i)
+                p[i] = tbl[static_cast<uint8_t>(in[i])];
+            return out;
+        }
         if (x.dtype() != HTensor::DType::Float32)
             return x;
         HTensor out{HTensor::DType::Float32, x.shape()};
@@ -62,6 +85,35 @@ class SigmoidActivation : public ActivationFunction {
 class SoftmaxActivation : public ActivationFunction {
   public:
     HTensor operator()(const HTensor& x) const override {
+        if (x.dtype() == HTensor::DType::UInt8 && x.shape().size() == 1) {
+            std::size_t n = x.shape()[0];
+            HTensor out{HTensor::DType::UInt8, {n}};
+            out.data().resize(n);
+            const int8_t* in = reinterpret_cast<const int8_t*>(x.data().data());
+            int8_t* p = reinterpret_cast<int8_t*>(out.data().data());
+
+            int8_t maxv = in[0];
+            for (std::size_t i = 1; i < n; ++i)
+                if (in[i] > maxv)
+                    maxv = in[i];
+
+            const auto& tbl = exp_table();
+            std::vector<uint16_t> tmp(n);
+            uint32_t sum = 0;
+            for (std::size_t i = 0; i < n; ++i) {
+                int diff = static_cast<int>(in[i]) - static_cast<int>(maxv);
+                if (diff < -128)
+                    diff = -128;
+                uint16_t e = tbl[static_cast<uint8_t>(diff + 128)];
+                tmp[i] = e;
+                sum += e;
+            }
+            for (std::size_t i = 0; i < n; ++i) {
+                int32_t val = (static_cast<uint32_t>(tmp[i]) * 127 + sum / 2) / sum;
+                p[i] = static_cast<int8_t>(val);
+            }
+            return out;
+        }
         if (x.dtype() != HTensor::DType::Float32 || x.shape().size() != 1)
             return x;
         std::size_t n = x.shape()[0];

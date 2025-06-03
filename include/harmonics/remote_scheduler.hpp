@@ -3,12 +3,15 @@
 #include "harmonics/compression.hpp"
 #include "harmonics/cycle.hpp"
 #include "harmonics/distributed_io.hpp"
+#include "harmonics/flight_io.hpp"
 #include "harmonics/graph.hpp"
+#include "harmonics/grpc_io.hpp"
 #include "harmonics/partition.hpp"
 #include "harmonics/tcp_io.hpp"
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace harmonics {
@@ -22,7 +25,8 @@ struct RemoteBinding {
     std::string host{"127.0.0.1"}; ///< Target host
     unsigned short port{0};        ///< Target port
     RemoteTransport transport{RemoteTransport::TCP};
-    bool compress{false}; ///< Enable gradient compression
+    bool compress{false};    ///< Enable gradient compression
+    int max_message_size{0}; ///< Optional gRPC/Flight message size
 };
 
 /**
@@ -92,10 +96,10 @@ class RemoteScheduler {
                 prod = std::make_unique<TcpProducer>(b.host, b.port);
             break;
         case RemoteTransport::GRPC:
-            prod = std::make_unique<GrpcProducer>(b.host, b.port);
+            prod = std::make_unique<GrpcProducer>(b.host, b.port, b.max_message_size);
             break;
         case RemoteTransport::Flight:
-            /* Integration disabled */
+            prod = std::make_unique<FlightProducer>(b.host, b.port, b.max_message_size);
             break;
         }
         if (b.compress)
@@ -113,10 +117,10 @@ class RemoteScheduler {
                 cons = std::make_unique<TcpConsumer>(b.host, b.port);
             break;
         case RemoteTransport::GRPC:
-            cons = std::make_unique<GrpcConsumer>(b.host, b.port);
+            cons = std::make_unique<GrpcConsumer>(b.host, b.port, b.max_message_size);
             break;
         case RemoteTransport::Flight:
-            /* Integration disabled */
+            cons = std::make_unique<FlightConsumer>(b.host, b.port, b.max_message_size);
             break;
         }
         if (b.compress)
@@ -140,11 +144,6 @@ class RemoteScheduler {
                 consumer_bindings_.resize(id.index + 1);
             consumer_bindings_[id.index] = make_consumer(b);
         }
-        if (!consumer_bindings_.empty() &&
-            graph_.consumer_bindings.size() < consumer_bindings_.size())
-            graph_.consumer_bindings.resize(consumer_bindings_.size());
-        for (std::size_t i = 0; i < consumer_bindings_.size(); ++i)
-            graph_.consumer_bindings[i] = consumer_bindings_[i];
     }
 
     HarmonicGraph graph_{};

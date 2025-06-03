@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <dlfcn.h>
+#include <optional>
 #include <string>
 
 namespace harmonics {
@@ -22,6 +23,36 @@ inline constexpr QuantumHardwareBackend select_quantum_hardware_backend() {
 
 inline constexpr bool quantum_hardware_available() {
     return select_quantum_hardware_backend() != QuantumHardwareBackend::None;
+}
+
+inline std::optional<uint32_t>& quantum_device_override() {
+    static std::optional<uint32_t> index;
+    return index;
+}
+
+inline void set_quantum_device_index(uint32_t index) { quantum_device_override() = index; }
+
+inline uint32_t quantum_device_index() {
+#if HARMONICS_HAS_QUANTUM_HW
+    if (const char* env = std::getenv("HARMONICS_QUANTUM_HW_DEVICE")) {
+        int idx = std::atoi(env);
+        if (idx >= 0)
+            return static_cast<uint32_t>(idx);
+    } else if (quantum_device_override()) {
+        return *quantum_device_override();
+    }
+    return 0;
+#else
+    return 0;
+#endif
+}
+
+inline uint32_t quantum_device_count() {
+#if HARMONICS_HAS_QUANTUM_HW
+    return 1;
+#else
+    return 0;
+#endif
 }
 
 inline bool quantum_hardware_runtime_available() {

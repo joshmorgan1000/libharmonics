@@ -1,9 +1,9 @@
 #pragma once
 
-// #include "harmonics/flight_io.hpp" // Flight transport disabled
+#include "harmonics/flight_io.hpp"
 #include "harmonics/grpc_io.hpp"
 #include "harmonics/net_utils.hpp"
-// #include "harmonics/spark_dataset.hpp" // Integration disabled
+#include "harmonics/spark_dataset.hpp"
 #include "harmonics/stream_io.hpp"
 #include "harmonics/tcp_io.hpp"
 
@@ -46,9 +46,19 @@ inline std::shared_ptr<Producer> make_producer(const std::string& target) {
         unsigned short port = static_cast<unsigned short>(std::stoi(rest.substr(pos + 1)));
         return std::make_shared<GrpcProducer>(host, port);
     } else if (scheme == "flight") {
-        /* Flight disabled */
+        auto pos = rest.find(':');
+        if (pos == std::string::npos)
+            throw std::runtime_error("invalid flight target: " + target);
+        auto host = rest.substr(0, pos);
+        unsigned short port = static_cast<unsigned short>(std::stoi(rest.substr(pos + 1)));
+        return std::make_shared<FlightProducer>(host, port);
     } else if (scheme == "spark") {
-        /* Integration disabled */
+        auto pos = rest.find(':');
+        if (pos == std::string::npos)
+            throw std::runtime_error("invalid spark target: " + target);
+        auto host = rest.substr(0, pos);
+        unsigned short port = static_cast<unsigned short>(std::stoi(rest.substr(pos + 1)));
+        return std::make_shared<SparkProducer>(host, port);
     }
     throw std::runtime_error("unsupported producer target: " + target);
 }
@@ -80,9 +90,19 @@ inline std::shared_ptr<Consumer> make_consumer(const std::string& target) {
         unsigned short port = static_cast<unsigned short>(std::stoi(rest.substr(pos + 1)));
         return std::make_shared<GrpcConsumer>(host, port);
     } else if (scheme == "flight") {
-        /* Flight disabled */
+        auto pos = rest.find(':');
+        if (pos == std::string::npos)
+            throw std::runtime_error("invalid flight target: " + target);
+        auto host = rest.substr(0, pos);
+        unsigned short port = static_cast<unsigned short>(std::stoi(rest.substr(pos + 1)));
+        return std::make_shared<FlightConsumer>(host, port);
     } else if (scheme == "spark") {
-        /* Integration disabled */
+        auto pos = rest.find(':');
+        if (pos == std::string::npos)
+            throw std::runtime_error("invalid spark target: " + target);
+        auto host = rest.substr(0, pos);
+        unsigned short port = static_cast<unsigned short>(std::stoi(rest.substr(pos + 1)));
+        return std::make_shared<SparkConsumer>(host, port);
     }
     throw std::runtime_error("unsupported consumer target: " + target);
 }

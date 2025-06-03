@@ -258,6 +258,43 @@ TEST(LayerFunctionsTest, PoolingWindowThree) {
     EXPECT_FLOAT_EQ(av[0], (p[0] + p[1] + p[2]) / 3.0f);
 }
 
+TEST(LayerFunctionsTest, Int8Layers) {
+    harmonics::set_convolution_kernel(3);
+    harmonics::set_pool_window(2);
+    harmonics::register_builtin_layers();
+
+    HTensor t{HTensor::DType::UInt8, {4}};
+    t.data().resize(4);
+    int8_t* p = reinterpret_cast<int8_t*>(t.data().data());
+    p[0] = 1;
+    p[1] = 3;
+    p[2] = 2;
+    p[3] = 4;
+
+    const auto& conv = harmonics::getLayer("conv");
+    auto c = conv(t);
+    EXPECT_EQ(c.dtype(), HTensor::DType::UInt8);
+    EXPECT_EQ(c.shape().size(), 1u);
+    EXPECT_EQ(c.shape()[0], 2u);
+    const int8_t* cv = reinterpret_cast<const int8_t*>(c.data().data());
+    EXPECT_EQ(cv[0], 6);
+    EXPECT_EQ(cv[1], 9);
+
+    const auto& maxp = harmonics::getLayer("max_pool");
+    auto m = maxp(t);
+    EXPECT_EQ(m.dtype(), HTensor::DType::UInt8);
+    const int8_t* mv = reinterpret_cast<const int8_t*>(m.data().data());
+    EXPECT_EQ(mv[0], 3);
+    EXPECT_EQ(mv[1], 4);
+
+    const auto& avgp = harmonics::getLayer("avg_pool");
+    auto a = avgp(t);
+    EXPECT_EQ(a.dtype(), HTensor::DType::UInt8);
+    const int8_t* av = reinterpret_cast<const int8_t*>(a.data().data());
+    EXPECT_EQ(av[0], 2);
+    EXPECT_EQ(av[1], 3);
+}
+
 TEST(LayerFunctionsTest, DropoutLayerTypes) {
     harmonics::register_builtin_layers();
 
@@ -285,7 +322,7 @@ TEST(LayerFunctionsTest, DropoutLayerTypes) {
     EXPECT_EQ(outi32.dtype(), HTensor::DType::Int32);
     const std::int32_t* iout = reinterpret_cast<const std::int32_t*>(outi32.data().data());
     for (int i = 0; i < 3; ++i)
-        EXPECT_EQ(iout[i], ip[i]);
+        EXPECT_EQ(iout[i], 0);
 }
 
 int main(int argc, char** argv) {

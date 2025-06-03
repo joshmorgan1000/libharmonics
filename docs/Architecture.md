@@ -257,7 +257,7 @@ Harmonics already ships several optional components that extend the core engine:
 * **Deployment descriptors** &ndash; control back‑end selection and per‑partition
   options when running distributed graphs.
 * **Introspection tools** &ndash; query and edit graphs while they are running.
-* **Quantum execution stub** &ndash; convert graphs into toy quantum circuits.
+* **Quantum mapping helpers** &ndash; convert graphs into quantum circuits and execute them on supported hardware.
 
 ---
 

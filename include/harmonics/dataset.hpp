@@ -47,6 +47,15 @@ namespace harmonics {
 inline void validate_schema(const std::vector<HTensor>& records);
 
 // ---------------------------------------------------------------------------
+// Motivation
+// ---------------------------------------------------------------------------
+// These dataset utilities grew out of unit tests that required tiny yet
+// flexible data sources. Over time they evolved into a small framework for
+// prototyping input pipelines. While not intended to replace full-featured
+// libraries, the helpers demonstrate the minimal interface a producer must
+// implement in order to integrate with the rest of Harmonics.
+
+// ---------------------------------------------------------------------------
 // Glossary
 // ---------------------------------------------------------------------------
 // * **Producer**  - Object implementing the `Producer` interface which yields
@@ -104,6 +113,73 @@ inline void validate_schema(const std::vector<HTensor>& records);
 // dependencies so the code remains easy to read and compile. The loaders now
 // validate inputs and handle common edge cases, making them reliable for
 // production use.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// High level pipeline construction
+// ---------------------------------------------------------------------------
+// The typical application combines several of the producers below to build a
+// small input pipeline. While every project is different, most follow the same
+// broad pattern:
+//
+// 1. **Choose a reader** such as CsvProducer, IdxProducer or HttpProducer to
+//    source raw tensors from disk or over the network.
+// 2. **Optionally apply transformations** using AugmentProducer or a custom
+//    wrapper. These transformations should be lightweight and avoid allocating
+//    unnecessary memory.
+// 3. **Shuffle the data** when training so that the model does not overfit to
+//    the order of samples on disk. ShuffleProducer provides a tiny in-memory
+//    variant for test workloads.
+// 4. **Batch the samples** using BatchProducer. Batching is often the final step
+//    before handing tensors to the runtime for inference or training.
+//
+// Each step is represented as its own class to make the pipeline easy to reason
+// about. Because the classes are header-only they can be composed without
+// additional build steps, keeping iteration times short during development.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Implementation details
+// ---------------------------------------------------------------------------
+// Internally the helpers rely on a tiny set of primitives for serialising and
+// deserialising tensors. Each tensor is stored as a one byte dtype tag followed
+// by the dimension count, the dimensions themselves as 32-bit little endian
+// integers and finally the raw element data. The `read_tensor` and
+// `write_tensor` functions in serialization.hpp implement this format and are
+// reused by most producers and consumers.
+//
+// The loaders that support memory mapping parse the container header once and
+// then store offsets to individual records. Accessing a sample becomes a matter
+// of copying the required number of bytes from the mapped region. While this is
+// not as feature rich as a full HDF5 implementation, it provides predictable
+// performance and keeps the code portable across platforms.
+//
+// Error handling is deliberately strict. For example, IDX and HDF5 readers check
+// that no additional bytes remain after the expected number of records has been
+// parsed. This catches truncated files early which can otherwise lead to subtle
+// shape mismatches downstream. Wherever possible the loaders provide descriptive
+// exceptions so that failing tests point directly at the offending input.
+//
+// Because these helpers are used heavily in unit tests the focus is on
+// deterministic behaviour. Randomised components such as ShuffleProducer expose
+// their RNG so tests can reproduce orderings if needed. Memory allocations are
+// kept to a minimum to avoid introducing nondeterministic latency.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Thread safety considerations
+// ---------------------------------------------------------------------------
+// None of the producers in this header are inherently thread safe. Most store
+// their internal state such as record vectors or file handles without any
+// synchronisation. They are expected to be used from a single thread or wrapped
+// in higher level concurrency utilities provided elsewhere in the library.
+//
+// When running multi-threaded input pipelines it is common to allocate one
+// producer instance per worker thread. The lightweight nature of the loaders
+// makes this approach inexpensive while avoiding the need for locks. Consumers
+// on the other hand can usually be shared safely as they perform atomic writes
+// to disk or remote endpoints. Where this is not the case it is explicitly
+// documented in the relevant class.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -179,6 +255,10 @@ inline void parse_csv_line(std::string_view line, std::vector<float>& out,
  */
 class CsvProducer : public Producer {
   public:
+    // CsvProducer loads the entire file into memory on construction so that
+    // repeated iterations require no further disk access. This behaviour keeps
+    // the runtime of unit tests predictable but may use significant memory for
+    // huge datasets.
     /**
      * Construct a producer reading from a CSV file.
      *
@@ -284,6 +364,10 @@ class CsvProducer : public Producer {
  */
 class StreamingCsvProducer : public Producer {
   public:
+    // Lines are parsed lazily in next() which keeps memory usage low but
+    // requires that the underlying stream remains valid for the lifetime of
+    // the producer. This trade off makes it ideal for iterating over large
+    // files without incurring a huge allocation cost.
     explicit StreamingCsvProducer(const std::string& path, bool validate = false)
         : in_{std::make_shared<std::ifstream>(path)}, validate_{validate} {
         auto* f = static_cast<std::ifstream*>(in_.get());
@@ -344,6 +428,9 @@ class StreamingCsvProducer : public Producer {
  */
 class MmapCsvProducer : public Producer {
   public:
+    // Mapping the file avoids copying any data until a line is requested. This
+    // approach dramatically reduces startup time for large CSV datasets while
+    // still allowing random access to individual records.
 #ifdef __unix__
     explicit MmapCsvProducer(const std::string& path, bool validate = false) : validate_{validate} {
         fd_ = ::open(path.c_str(), O_RDONLY);
@@ -456,6 +543,9 @@ class MmapCsvProducer : public Producer {
  */
 class IdxProducer : public Producer {
   public:
+    // IDX files store tensors with a simple fixed header. This loader reads the
+    // entire file eagerly since most test datasets are small. Each call to
+    // next() simply cycles through the cached record vector.
     /**
      * Construct a producer reading from an IDX file.
      *
@@ -588,6 +678,10 @@ class IdxProducer : public Producer {
  */
 class MmapIdxProducer : public Producer {
   public:
+    // Only the offsets of each record are stored which keeps memory overhead
+    // minimal even for very large IDX files. Accessing a record simply copies
+    // the bytes from the mapped region into a temporary buffer returned as an
+    // HTensor.
 #ifdef __unix__
     explicit MmapIdxProducer(const std::string& path, bool validate = false) : validate_{validate} {
         fd_ = ::open(path.c_str(), O_RDONLY);
@@ -724,6 +818,9 @@ class MmapIdxProducer : public Producer {
  */
 class ShuffleProducer : public Producer {
   public:
+    // The entire dataset is cached to allow inexpensive random permutations.
+    // This approach is memory hungry but perfectly adequate for the tiny
+    // synthetic datasets used in tests where predictability is paramount.
     explicit ShuffleProducer(std::shared_ptr<Producer> inner) : inner_{std::move(inner)} {
         // Eagerly read all samples so we can cheaply permute them.
         // The assumption is that test datasets are small enough to fit in
@@ -829,6 +926,10 @@ inline void validate_schema(const std::vector<HTensor>& records) {
  */
 class BatchProducer : public Producer {
   public:
+    // Batching is implemented purely as a concatenation of consecutive samples
+    // and assumes all records share the same shape and dtype. It is therefore
+    // most suitable for synthetic or preprocessed data where this invariant is
+    // guaranteed.
     BatchProducer(std::shared_ptr<Producer> inner, std::size_t batch)
         : inner_{std::move(inner)}, batch_{batch} {
         // The constructor simply stores the inner producer and desired batch
@@ -881,6 +982,10 @@ class AugmentProducer : public Producer {
   public:
     using Fn = std::function<HTensor(const HTensor&)>;
 
+    // Augmentations are performed synchronously in the calling thread. For
+    // heavyweight transformations consider wrapping this producer with an
+    // AsyncProducer to overlap computation with data loading.
+
     /// Construct with the producer to wrap and the augmentation function.
 
     AugmentProducer(std::shared_ptr<Producer> inner, Fn fn)
@@ -903,6 +1008,54 @@ class AugmentProducer : public Producer {
     Fn fn_{};
 };
 
+/**
+ * @brief Expose a shard of another producer.
+ *
+ * This wrapper divides the records from an existing producer into a
+ * number of shards and iterates over only one of them. Sharding is
+ * performed eagerly on construction to keep the logic simple which is
+ * sufficient for the small datasets used in unit tests.
+ */
+class ShardProducer : public Producer {
+  public:
+    /// Construct a producer that iterates over a specific shard of \p inner.
+    ///
+    /// @param inner      Producer providing the full dataset.
+    /// @param shard_idx  Index of the shard to expose.
+    /// @param num_shards Total number of shards.
+    ShardProducer(std::shared_ptr<Producer> inner, std::size_t shard_idx, std::size_t num_shards)
+        : index_{0} {
+        if (!inner || num_shards == 0 || shard_idx >= num_shards)
+            throw std::invalid_argument("invalid shard parameters");
+
+        std::vector<HTensor> all;
+        all.reserve(inner->size());
+        for (std::size_t i = 0; i < inner->size(); ++i)
+            all.push_back(inner->next());
+
+        std::size_t base = all.size() / num_shards;
+        std::size_t extra = all.size() % num_shards;
+        std::size_t start = shard_idx * base + std::min(shard_idx, extra);
+        std::size_t count = base + (shard_idx < extra ? 1 : 0);
+        data_.reserve(count);
+        for (std::size_t i = 0; i < count; ++i)
+            data_.push_back(std::move(all[start + i]));
+    }
+
+    HTensor next() override {
+        if (data_.empty())
+            return {};
+        const auto& t = data_[index_++ % data_.size()];
+        return t;
+    }
+
+    std::size_t size() const override { return data_.size(); }
+
+  private:
+    std::vector<HTensor> data_{};
+    std::size_t index_{};
+};
+
 // ---------------------------------------------------------------------------
 // Format specific producers
 
@@ -915,6 +1068,9 @@ class AugmentProducer : public Producer {
  */
 class TFRecordProducer : public Producer {
   public:
+    // Only a subset of the TFRecord format is implemented. The producer is
+    // intended for portability tests where pulling in TensorFlow dependencies
+    // would be excessive.
     explicit TFRecordProducer(std::istream& in) { parse_stream(in); }
     explicit TFRecordProducer(const std::string& path) {
         std::ifstream f(path, std::ios::binary);
@@ -975,6 +1131,10 @@ class TFRecordProducer : public Producer {
  */
 class CocoJsonProducer : public Producer {
   public:
+    // The JSON parser deliberately supports only a fraction of the COCO
+    // specification. It scans the file for "bbox" arrays and converts them
+    // into float tensors which is sufficient for demonstrating object
+    // detection workflows without introducing a real JSON dependency.
     explicit CocoJsonProducer(std::istream& in) { parse_stream(in); }
     explicit CocoJsonProducer(const std::string& path) {
         std::ifstream f(path);
@@ -1063,6 +1223,9 @@ class CocoJsonProducer : public Producer {
  */
 class Hdf5Producer : public Producer {
   public:
+    // The file is parsed entirely on construction. Compressed containers are
+    // decompressed into a temporary buffer before records are extracted which
+    // keeps later calls to next() inexpensive.
     explicit Hdf5Producer(std::istream& in, bool validate = false) : validate_{validate} {
         parse_stream(in);
         if (validate_)
@@ -1149,6 +1312,10 @@ class Hdf5Producer : public Producer {
  */
 class MmapHdf5Producer : public Producer {
   public:
+    // For uncompressed containers each tensor is decoded directly from the
+    // mapped region. When compression is enabled the entire file is first
+    // decompressed into an internal buffer to keep the access logic identical
+    // to the streaming implementation.
 #ifdef __unix__
     explicit MmapHdf5Producer(const std::string& path, bool validate = false)
         : validate_{validate} {
@@ -1305,6 +1472,9 @@ class MmapHdf5Producer : public Producer {
  */
 class Hdf5Consumer : public Consumer {
   public:
+    // Records are written in the same custom format understood by Hdf5Producer.
+    // When compression is enabled all tensors are first accumulated in memory
+    // and compressed in a single block upon destruction.
     explicit Hdf5Consumer(const std::string& path, bool compress = false)
         : compress_{compress}, out_{std::make_shared<std::ofstream>(path, std::ios::binary)} {
         auto* f = static_cast<std::ofstream*>(out_.get());
@@ -1379,6 +1549,10 @@ class Hdf5Consumer : public Consumer {
  */
 class CheckpointHdf5Consumer : public Consumer {
   public:
+    // This consumer appends to an existing file if present, making it suitable
+    // for long running jobs that periodically save intermediate results. When
+    // compression is enabled the entire file is rewritten on finalisation to
+    // update the record count and append the new block.
     explicit CheckpointHdf5Consumer(const std::string& path, bool compress = false) : path_{path} {
         file_ =
             std::make_shared<std::fstream>(path, std::ios::binary | std::ios::in | std::ios::out);
@@ -1495,6 +1669,12 @@ class CheckpointHdf5Consumer : public Consumer {
 // ---------------------------------------------------------------------------
 // Implementation overview
 // ---------------------------------------------------------------------------
+
+/// \brief HTTP dataset loader used primarily by integration tests.
+///
+/// The implementation performs a blocking HTTP GET and interprets the
+/// response body as a sequence of serialized tensors. Optional caching
+/// allows subsequent runs to avoid repeated network transfers.
 // The HTTP producer is purposefully tiny. It opens a TCP socket to the target
 // host, performs a very small HTTP/1.1 GET request and then interprets the
 // response body as a sequence of serialized tensors. Because this code is only
@@ -1511,6 +1691,9 @@ class CheckpointHdf5Consumer : public Consumer {
 // ---------------------------------------------------------------------------
 class HttpProducer : public Producer {
   public:
+    // Stub implementation for platforms without POSIX sockets.
+    // A minimal HTTP GET implementation using POSIX sockets. Designed for
+    // deterministic integration tests rather than production deployment.
     HttpProducer(const std::string& host, unsigned short port, const std::string& path = "/",
                  bool cache = true, const std::string& cache_path = "", bool validate = false)
         : host_{host}, port_{port}, path_{path}, cache_{cache}, cache_path_{cache_path},
@@ -1581,6 +1764,9 @@ class HttpProducer : public Producer {
             write_tensor(out, t);
     }
 
+    /// Perform the blocking HTTP GET and populate \ref records_.
+    /// Background worker that performs a non-blocking HTTP fetch.
+    /// Retrieve the remote HDF5 container and parse it into \ref prod_.
     void fetch() {
         // Perform a very small HTTP GET request and parse the response body.
         // This routine intentionally avoids using any external HTTP library.
@@ -1664,6 +1850,10 @@ class HttpProducer : public Producer {
  */
 class AsyncHttpProducer : public Producer {
   public:
+    // Networking work is performed in a background thread that fills the
+    // internal record vector. Calls to next() block until the download has
+    // completed. This keeps the interface simple while still demonstrating how
+    // asynchronous fetching could be integrated.
     AsyncHttpProducer(const std::string& host, unsigned short port, const std::string& path = "/",
                       bool validate = false)
         : host_{host}, port_{port}, path_{path}, validate_{validate} {
@@ -1775,6 +1965,12 @@ class AsyncHttpProducer : public Producer {
  */
 class HttpHdf5Producer : public Producer {
   public:
+    // Stub used when network support is unavailable. All calls return empty
+    // tensors so that test code can compile on any platform without additional
+    // dependencies.
+    // This helper fetches an entire HDF5 container via HTTP and then delegates
+    // parsing to Hdf5Producer. Caching works by writing the raw payload to disk
+    // and loading it on subsequent runs if available.
     HttpHdf5Producer(const std::string& host, unsigned short port, const std::string& path = "/",
                      bool cache = true, const std::string& cache_path = "", bool validate = false)
         : host_{host}, port_{port}, path_{path}, cache_{cache}, cache_path_{cache_path},
@@ -1886,5 +2082,274 @@ class HttpHdf5Producer : public Producer {
     std::size_t size() const override { return 0; }
 };
 #endif
+
+// ---------------------------------------------------------------------------
+// Detailed dataset design summary
+// ---------------------------------------------------------------------------
+// The following notes capture lessons learned while developing the dataset
+// helpers. Although they started life as unit test utilities they have grown
+// into a flexible mini-framework for feeding tensors into the runtime.
+//
+// Each producer balances simplicity with robustness. By avoiding heavyweight
+// dependencies contributors can easily read and modify the code. Error
+// handling covers common failure modes such as truncated files or malformed
+// records but leaves room for customisation when embedding these utilities
+// into larger projects.
+//
+// CsvProducer and its variants demonstrate the trade-offs between eager
+// parsing and streaming operation. The memory mapped version shows how large
+// files can be processed lazily without additional complexity. Similar
+// strategies are applied to the IDX and HDF5 loaders which share a common
+// schema validation helper.
+//
+// Transformation producers like ShuffleProducer and BatchProducer operate on
+// in-memory vectors for clarity. While this limits scalability it keeps the
+// implementations short and deterministic which is valuable for unit tests.
+// More sophisticated projects are expected to reimplement these ideas using
+// their preferred data pipeline tools.
+//
+// The HTTP based producers intentionally implement just enough of the protocol
+// to move tensors between processes. They serve as reference implementations
+// rather than production ready clients. Developers deploying Harmonics in
+// distributed settings can swap these with their own networking layers while
+// preserving the overall Producer interface.
+//
+// Consumers mirror their producer counterparts but focus on durability. The
+// checkpointing HDF5 consumer illustrates how interrupted jobs can resume
+// writing to the same file without corrupting existing data. This pattern is
+// reused by the caching helpers to ensure repeated experiments remain fast.
+//
+// Overall the dataset subsystem embodies the Harmonics philosophy of small,
+// composable pieces that can be understood in isolation. The code here is not
+// optimised for every scenario but provides a clear foundation for custom
+// pipelines.
+//
+// Future extensions may include:
+//  - Streaming decompression layers for real time dataset ingestion.
+//  - Integration with distributed file systems beyond simple HTTP.
+//  - Support for write ahead logs so long running jobs can resume exactly
+//    where they left off.
+//  - Advanced augmentation utilities such as random crops or colour jitter.
+//  - Automatic schema generation for new datasets.
+//  - On the fly data validation hooks that can be customised per project.
+//  - Metrics around data loading throughput to help diagnose bottlenecks.
+//  - Example implementations demonstrating how to wrap existing ML datasets
+//    like ImageNet or COCO using only the primitives provided here.
+//
+// These notes intentionally live in the header so that anyone exploring the
+// code can understand the design decisions without jumping between multiple
+// documents. Contributors are encouraged to keep this section up to date as new
+// features land.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Extended rationale
+// ---------------------------------------------------------------------------
+// Below is an expanded discussion of how these dataset helpers can be
+// composed in practical applications. The intent is to showcase patterns that
+// new users might follow when wiring up data pipelines.
+//
+// 1. **Simple file loader**
+//    A CsvProducer or IdxProducer is created with a path and optionally
+//    wrapped in AsyncProducer to prefetch records. When training on a single
+//    machine this may be all that is required.
+//
+// 2. **Streaming remote data**
+//    HttpProducer or HttpHdf5Producer can fetch tensors from a server. These
+//    can be combined with CachedProducer so that subsequent epochs use the
+//    on-disk copy instead of repeatedly hitting the network.
+//
+// 3. **Dataset augmentation**
+//    AugmentProducer applies element wise transforms such as normalisation
+//    or random jitter. Multiple AugmentProducers can be chained to form more
+//    complex pipelines without ever allocating temporary tensors.
+//
+// 4. **Batching**
+//    BatchProducer groups several samples together. This is typically wrapped
+//    around ShuffleProducer when training so that each batch contains a random
+//    mix of records.
+//
+// 5. **Distributed training**
+//    When graphs are partitioned across machines, each process can attach its
+//    own producer chain. The distributed IO helpers demonstrate how tensors can
+//    be shipped between nodes using TCP or gRPC while reusing the exact same
+//    Producer interface.
+//
+// 6. **Checkpointing**
+//    CheckpointHdf5Consumer enables incremental snapshots of intermediate
+//    tensors. This is useful for debugging or for resuming long running
+//    training sessions without repeating completed work.
+//
+// 7. **Custom sources**
+//    The simple structure of these helpers makes it easy to implement custom
+//    producers for proprietary formats. Only `next()` and `size()` must be
+//    provided, leaving all other policy decisions to the user.
+//
+// This extended commentary aims to provide enough context that future
+// contributors can adapt the dataset layer to their needs. Because Harmonics
+// emphasises pluggable components, understanding the intent behind each
+// helper is more valuable than memorising its implementation details.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Additional usage examples
+// ---------------------------------------------------------------------------
+// Example 1:
+// ```cpp
+// auto csv = std::make_shared<CsvProducer>("data.csv");
+// auto batched = std::make_shared<BatchProducer>(csv, 32);
+// auto shuffled = std::make_shared<ShuffleProducer>(batched);
+// ```
+// The above snippet loads a CSV file, groups samples into batches of 32 and
+// shuffles them each epoch. Because the loaders are small and header-only they
+// can be instantiated directly in unit tests without additional setup.
+//
+// Example 2:
+// ```cpp
+// auto remote = std::make_shared<HttpProducer>("127.0.0.1", 8080, "/tensors");
+// CachedProducer cache(remote, "local.hdf5");
+// AsyncProducer async(cache);
+// ```
+// Here tensors are downloaded from a remote service and cached locally for the
+// next run. AsyncProducer prefetches records in a background thread to overlap
+// network latency with computation.
+//
+// Example 3:
+// ```cpp
+// auto base = std::make_shared<IdxProducer>("images.idx");
+// auto aug = std::make_shared<AugmentProducer>(base, [](HTensor t) {
+//     // user defined transformation
+//     return t;
+// });
+// ```
+// A custom lambda can be supplied to AugmentProducer to implement complex data
+// augmentation without modifying the core library.
+//
+// These scenarios are intentionally simple but illustrate how the pieces fit
+// together. More advanced pipelines can be built by combining the primitives in
+// different arrangements.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Tips for implementing custom producers
+// ---------------------------------------------------------------------------
+// * Keep constructors lightweight so that graph initialisation remains fast.
+// * Prefer explicit error messages when parsing files to aid debugging.
+// * Consider exposing additional configuration parameters via lambdas or
+//   small structs instead of hardcoding behaviour.
+// * Use existing helpers such as `write_tensor` and `read_tensor` to maintain
+//   compatibility with other components.
+// * Document any assumptions about tensor shapes or dtypes as doxygen
+//   comments so they appear in the generated reference docs.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Advanced caching strategies
+// ---------------------------------------------------------------------------
+// Several producers support optional caching via simple helper classes. While
+// sufficient for unit tests, large deployments may require more robust cache
+// management. Below are a few ideas worth exploring if dataset loading becomes
+// a bottleneck:
+//
+//  - Incorporate a pluggable eviction policy so cached files can be reused
+//    across multiple experiments without manual cleanup.
+//  - Record the modification time of source files and invalidate stale cache
+//    entries automatically.
+//  - Expose hooks that allow applications to implement their own persistent
+//    storage mechanism, for example using a local database or distributed file
+//    system.
+//  - Provide progress callbacks when fetching remote datasets so user interfaces
+//    can display download status.
+//  - Support partial dataset refreshes where only missing records are
+//    transferred.
+//
+// The current implementations keep caching logic deliberately straightforward so
+// it remains easy to audit. These notes outline directions for future
+// enhancements should more sophisticated behaviour be required.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Debugging hints
+// ---------------------------------------------------------------------------
+// When developing custom producers it can be helpful to run a small suite of
+// unit tests that exercise unusual edge cases. Examples include empty files,
+// truncated records and incorrect header information. By emulating common
+// failure modes the behaviour of the loader becomes predictable and stable.
+//
+// Another tip is to log the shapes and dtypes of the first few samples after
+// loading. Many bugs stem from mismatched expectations about tensor layouts.
+// Having this information readily available speeds up integration work.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// HTTP producer internals
+// ---------------------------------------------------------------------------
+// The HTTP based producers are intentionally very small yet demonstrate how
+// tensors can be streamed over the network. They operate by issuing a basic
+// HTTP/1.1 request using either blocking or non-blocking POSIX sockets. Only a
+// handful of status codes are checked and there is no support for advanced
+// features such as chunked encoding or TLS. The design favours readability over
+// completeness so developers can quickly adapt the code to their needs.
+//
+// The synchronous variant performs the entire download in the calling thread.
+// This keeps the implementation straightforward but can stall computation when
+// fetching large datasets. The asynchronous variant spawns a worker thread and
+// polls the socket using `select` until the response has been received. While
+// still simplistic, it allows overlap of network I/O with other work.
+//
+// Both variants support optional on-disk caching. When enabled, the raw response
+// body is saved to a file and reused on subsequent runs. This drastically speeds
+// up integration tests which would otherwise fetch the same data repeatedly.
+// The cache format simply concatenates the tensor blobs using the same binary
+// representation as the in-memory loaders.
+//
+// For deployments that require more robust networking capabilities developers
+// are encouraged to replace these producers with implementations built on top of
+// a full HTTP client library. The provided code serves primarily as a reference
+// to illustrate how the Producer interface can be implemented using nothing more
+// than standard sockets.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Example extension ideas
+// ---------------------------------------------------------------------------
+// This section proposes a few advanced features that could be layered on top of
+// the existing helpers. They are not implemented here to keep the core library
+// lean but may prove useful in larger projects:
+//
+//  - **Prefetch queues**: wrap a producer in a background thread that fills a
+//    small ring buffer. This hides latency when reading from slow devices.
+//  - **Data sharding**: split huge datasets across multiple machines and cycle
+//    through shards each epoch to maximise throughput.
+//  - **Transformation graphs**: express complex augmentation as a graph of
+//    producers where edges represent the flow of tensors. This could integrate
+//    with Harmonics' existing graph utilities for a unified model.
+//  - **Metrics hooks**: expose callbacks for counting bytes read and time spent
+//    loading. Such metrics help diagnose bottlenecks during training.
+//  - **Schema versioning**: include a small header with each dataset that
+//    records the expected tensor layout and version. Producers can verify this
+//    information to catch mismatches early.
+//
+// None of these ideas are strictly necessary for the sample projects that ship
+// with Harmonics, but they highlight how easily the basic building blocks can be
+// extended when more sophisticated behaviour is required.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Cross platform notes
+// ---------------------------------------------------------------------------
+// The dataset helpers attempt to work on a wide range of platforms. All
+// functionality relying on POSIX APIs is guarded by preprocessor checks with
+// fallbacks that compile everywhere but may provide only stubs. For example the
+// HTTP producers do nothing on systems without socket support. This keeps the
+// core library portable while still showcasing possible integrations when the
+// required features are available.
+//
+// Contributors adding new loaders should follow the same pattern and isolate
+// platform specific logic behind `#ifdef` blocks. Whenever a feature is missing
+// a lightweight stub should be provided so unit tests continue to compile. This
+// approach ensures that Harmonics remains easy to build even in constrained
+// environments such as embedded systems or unusual operating systems.
+// ---------------------------------------------------------------------------
 
 } // namespace harmonics

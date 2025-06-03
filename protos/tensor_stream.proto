@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package harmonics;
+
+import "google/protobuf/empty.proto";
+
+message TensorData {
+  bytes serialized = 1;
+}
+
+service TensorService {
+  rpc PushTensor(stream TensorData) returns (google.protobuf.Empty);
+  rpc PopTensor(google.protobuf.Empty) returns (stream TensorData);
+}

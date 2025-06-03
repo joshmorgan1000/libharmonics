@@ -12,6 +12,9 @@
 #if HARMONICS_HAS_SSE2
 #include <immintrin.h>
 #endif
+#if HARMONICS_HAS_CUDA
+#include "harmonics/cuda_adapter.hpp"
+#endif
 
 #include "harmonics/core.hpp"
 #include "harmonics/function_registry.hpp"
@@ -38,6 +41,14 @@ inline void set_attention_temperature(float t) { layer_behavior().attention_temp
 inline void set_attention_heads(std::size_t h) { layer_behavior().attention_heads = h; }
 inline void set_pool_window(std::size_t w) { layer_behavior().pool_window = w; }
 
+inline int8_t clamp_int8(int32_t v) {
+    if (v > 127)
+        return 127;
+    if (v < -128)
+        return -128;
+    return static_cast<int8_t>(v);
+}
+
 /**
  * Simple convolution layer operating on 1D float tensors.
  * The kernel weights are fixed to 1 and stride is 1.
@@ -48,22 +59,41 @@ class ConvolutionLayer : public LayerFunction {
         : kernel_{kernel} {}
 
     HTensor operator()(const HTensor& x) const override {
-        if (x.dtype() != HTensor::DType::Float32 || x.shape().size() != 1)
+        if (x.shape().size() != 1)
             return x;
         const auto n = x.shape()[0];
         if (n < kernel_)
             return x;
-        std::vector<float> vals(n - kernel_ + 1, 0.0f);
-        const float* in = reinterpret_cast<const float*>(x.data().data());
-        for (std::size_t i = 0; i + kernel_ <= n; ++i) {
-            float sum = 0.0f;
-            for (std::size_t k = 0; k < kernel_; ++k)
-                sum += in[i + k];
-            vals[i] = sum;
+
+        if (x.dtype() == HTensor::DType::Float32) {
+            std::vector<float> vals(n - kernel_ + 1, 0.0f);
+            const float* in = reinterpret_cast<const float*>(x.data().data());
+            for (std::size_t i = 0; i + kernel_ <= n; ++i) {
+                float sum = 0.0f;
+                for (std::size_t k = 0; k < kernel_; ++k)
+                    sum += in[i + k];
+                vals[i] = sum;
+            }
+            std::vector<std::byte> bytes(vals.size() * sizeof(float));
+            std::memcpy(bytes.data(), vals.data(), bytes.size());
+            return {HTensor::DType::Float32, {vals.size()}, std::move(bytes)};
         }
-        std::vector<std::byte> bytes(vals.size() * sizeof(float));
-        std::memcpy(bytes.data(), vals.data(), bytes.size());
-        return {HTensor::DType::Float32, {vals.size()}, std::move(bytes)};
+
+        if (x.dtype() == HTensor::DType::UInt8) {
+            std::vector<int8_t> vals(n - kernel_ + 1, 0);
+            const int8_t* in = reinterpret_cast<const int8_t*>(x.data().data());
+            for (std::size_t i = 0; i + kernel_ <= n; ++i) {
+                int32_t sum = 0;
+                for (std::size_t k = 0; k < kernel_; ++k)
+                    sum += static_cast<int32_t>(in[i + k]);
+                vals[i] = clamp_int8(sum);
+            }
+            std::vector<std::byte> bytes(vals.size());
+            std::memcpy(bytes.data(), vals.data(), bytes.size());
+            return {HTensor::DType::UInt8, {vals.size()}, std::move(bytes)};
+        }
+
+        return x;
     }
 
   private:
@@ -76,20 +106,42 @@ class NormalizationLayer : public LayerFunction {
     explicit NormalizationLayer(float eps = layer_behavior().norm_epsilon) : eps_{eps} {}
 
     HTensor operator()(const HTensor& x) const override {
-        if (x.dtype() != HTensor::DType::Float32 || x.shape().size() != 1)
+        if (x.shape().size() != 1)
             return x;
+
         const auto n = x.shape()[0];
-        std::vector<float> vals(n);
-        const float* in = reinterpret_cast<const float*>(x.data().data());
-        float norm = 0.0f;
-        for (std::size_t i = 0; i < n; ++i)
-            norm += in[i] * in[i];
-        norm = std::sqrt(norm) + eps_;
-        for (std::size_t i = 0; i < n; ++i)
-            vals[i] = in[i] / norm;
-        std::vector<std::byte> bytes(vals.size() * sizeof(float));
-        std::memcpy(bytes.data(), vals.data(), bytes.size());
-        return {HTensor::DType::Float32, {n}, std::move(bytes)};
+
+        if (x.dtype() == HTensor::DType::Float32) {
+            std::vector<float> vals(n);
+            const float* in = reinterpret_cast<const float*>(x.data().data());
+            float norm = 0.0f;
+            for (std::size_t i = 0; i < n; ++i)
+                norm += in[i] * in[i];
+            norm = std::sqrt(norm) + eps_;
+            for (std::size_t i = 0; i < n; ++i)
+                vals[i] = in[i] / norm;
+            std::vector<std::byte> bytes(vals.size() * sizeof(float));
+            std::memcpy(bytes.data(), vals.data(), bytes.size());
+            return {HTensor::DType::Float32, {n}, std::move(bytes)};
+        }
+
+        if (x.dtype() == HTensor::DType::UInt8) {
+            std::vector<int8_t> vals(n);
+            const int8_t* in = reinterpret_cast<const int8_t*>(x.data().data());
+            float norm = 0.0f;
+            for (std::size_t i = 0; i < n; ++i)
+                norm += static_cast<float>(in[i]) * static_cast<float>(in[i]);
+            norm = std::sqrt(norm) + eps_;
+            for (std::size_t i = 0; i < n; ++i) {
+                float scaled = static_cast<float>(in[i]) / norm * 127.f;
+                vals[i] = clamp_int8(static_cast<int32_t>(std::round(scaled)));
+            }
+            std::vector<std::byte> bytes(vals.size());
+            std::memcpy(bytes.data(), vals.data(), bytes.size());
+            return {HTensor::DType::UInt8, {n}, std::move(bytes)};
+        }
+
+        return x;
     }
 
   private:
@@ -144,6 +196,21 @@ class CrossAttentionLayer : public LayerFunction {
             return x;
         const auto rows = x.shape()[0];
         const auto cols = x.shape()[1];
+
+#if HARMONICS_HAS_CUDA
+        if (cuda_runtime_available()) {
+            CudaBuffer src_buf = cuda_malloc(x.data().size());
+            cuda_memcpy_to_device(src_buf, x.data().data(), x.data().size());
+            CudaBuffer dst_buf{};
+            cuda_cross_attention_buffer(dst_buf, src_buf, rows, cols, temp_);
+            std::vector<std::byte> bytes(x.data().size());
+            cuda_memcpy_to_host(bytes.data(), dst_buf, bytes.size());
+            cuda_free(src_buf);
+            cuda_free(dst_buf);
+            return {HTensor::DType::Float32, x.shape(), std::move(bytes)};
+        }
+#endif
+
         std::vector<float> vals(rows * cols);
         const float* in = reinterpret_cast<const float*>(x.data().data());
         std::vector<float> weights(cols);
@@ -331,26 +398,48 @@ class MaxPoolingLayer : public LayerFunction {
     explicit MaxPoolingLayer(std::size_t window = layer_behavior().pool_window) : window_{window} {}
 
     HTensor operator()(const HTensor& x) const override {
-        if (x.dtype() != HTensor::DType::Float32 || x.shape().size() != 1)
+        if (x.shape().size() != 1)
             return x;
         const auto n = x.shape()[0];
         if (window_ == 0 || n < window_)
             return x;
         std::size_t out_n = n / window_;
-        std::vector<float> vals(out_n);
-        const float* in = reinterpret_cast<const float*>(x.data().data());
-        for (std::size_t i = 0; i < out_n; ++i) {
-            float maxv = in[i * window_];
-            for (std::size_t j = 1; j < window_; ++j) {
-                float v = in[i * window_ + j];
-                if (v > maxv)
-                    maxv = v;
+
+        if (x.dtype() == HTensor::DType::Float32) {
+            std::vector<float> vals(out_n);
+            const float* in = reinterpret_cast<const float*>(x.data().data());
+            for (std::size_t i = 0; i < out_n; ++i) {
+                float maxv = in[i * window_];
+                for (std::size_t j = 1; j < window_; ++j) {
+                    float v = in[i * window_ + j];
+                    if (v > maxv)
+                        maxv = v;
+                }
+                vals[i] = maxv;
             }
-            vals[i] = maxv;
+            std::vector<std::byte> bytes(vals.size() * sizeof(float));
+            std::memcpy(bytes.data(), vals.data(), bytes.size());
+            return {HTensor::DType::Float32, {out_n}, std::move(bytes)};
         }
-        std::vector<std::byte> bytes(vals.size() * sizeof(float));
-        std::memcpy(bytes.data(), vals.data(), bytes.size());
-        return {HTensor::DType::Float32, {out_n}, std::move(bytes)};
+
+        if (x.dtype() == HTensor::DType::UInt8) {
+            std::vector<int8_t> vals(out_n);
+            const int8_t* in = reinterpret_cast<const int8_t*>(x.data().data());
+            for (std::size_t i = 0; i < out_n; ++i) {
+                int8_t maxv = in[i * window_];
+                for (std::size_t j = 1; j < window_; ++j) {
+                    int8_t v = in[i * window_ + j];
+                    if (v > maxv)
+                        maxv = v;
+                }
+                vals[i] = maxv;
+            }
+            std::vector<std::byte> bytes(vals.size());
+            std::memcpy(bytes.data(), vals.data(), bytes.size());
+            return {HTensor::DType::UInt8, {out_n}, std::move(bytes)};
+        }
+
+        return x;
     }
 
   private:
@@ -364,30 +453,53 @@ class AveragePoolingLayer : public LayerFunction {
         : window_{window} {}
 
     HTensor operator()(const HTensor& x) const override {
-        if (x.dtype() != HTensor::DType::Float32 || x.shape().size() != 1)
+        if (x.shape().size() != 1)
             return x;
         const auto n = x.shape()[0];
         if (window_ == 0 || n < window_)
             return x;
         std::size_t out_n = n / window_;
-        std::vector<float> vals(out_n);
-        const float* in = reinterpret_cast<const float*>(x.data().data());
-        for (std::size_t i = 0; i < out_n; ++i) {
-            float sum = 0.0f;
-            for (std::size_t j = 0; j < window_; ++j)
-                sum += in[i * window_ + j];
-            vals[i] = sum / static_cast<float>(window_);
+
+        if (x.dtype() == HTensor::DType::Float32) {
+            std::vector<float> vals(out_n);
+            const float* in = reinterpret_cast<const float*>(x.data().data());
+            for (std::size_t i = 0; i < out_n; ++i) {
+                float sum = 0.0f;
+                for (std::size_t j = 0; j < window_; ++j)
+                    sum += in[i * window_ + j];
+                vals[i] = sum / static_cast<float>(window_);
+            }
+            std::vector<std::byte> bytes(vals.size() * sizeof(float));
+            std::memcpy(bytes.data(), vals.data(), bytes.size());
+            return {HTensor::DType::Float32, {out_n}, std::move(bytes)};
         }
-        std::vector<std::byte> bytes(vals.size() * sizeof(float));
-        std::memcpy(bytes.data(), vals.data(), bytes.size());
-        return {HTensor::DType::Float32, {out_n}, std::move(bytes)};
+
+        if (x.dtype() == HTensor::DType::UInt8) {
+            std::vector<int8_t> vals(out_n);
+            const int8_t* in = reinterpret_cast<const int8_t*>(x.data().data());
+            for (std::size_t i = 0; i < out_n; ++i) {
+                int32_t sum = 0;
+                for (std::size_t j = 0; j < window_; ++j)
+                    sum += static_cast<int32_t>(in[i * window_ + j]);
+                int32_t avg =
+                    (sum >= 0)
+                        ? (sum + static_cast<int32_t>(window_ / 2)) / static_cast<int32_t>(window_)
+                        : (sum - static_cast<int32_t>(window_ / 2)) / static_cast<int32_t>(window_);
+                vals[i] = clamp_int8(avg);
+            }
+            std::vector<std::byte> bytes(vals.size());
+            std::memcpy(bytes.data(), vals.data(), bytes.size());
+            return {HTensor::DType::UInt8, {out_n}, std::move(bytes)};
+        }
+
+        return x;
     }
 
   private:
     std::size_t window_{2};
 };
 
-/** Dropout layer for float tensors. */
+/** Dropout layer for tensors. */
 class DropoutLayer : public LayerFunction {
   public:
     explicit DropoutLayer(float rate = 0.5f) : rate_{rate} {}
@@ -395,24 +507,68 @@ class DropoutLayer : public LayerFunction {
     HTensor operator()(const HTensor& x) const override {
         if (rate_ <= 0.0f)
             return x;
-        if (x.dtype() != HTensor::DType::Float32 && x.dtype() != HTensor::DType::Float64)
-            return x;
+
+#if HARMONICS_HAS_CUDA
+        if (cuda_runtime_available() && x.dtype() == HTensor::DType::Float32) {
+            CudaBuffer src_buf = cuda_malloc(x.data().size());
+            cuda_memcpy_to_device(src_buf, x.data().data(), x.data().size());
+            CudaBuffer dst_buf{};
+            std::size_t elems = x.data().size() / sizeof(float);
+            cuda_dropout_buffer(dst_buf, src_buf, elems, rate_);
+            std::vector<std::byte> bytes(x.data().size());
+            cuda_memcpy_to_host(bytes.data(), dst_buf, bytes.size());
+            cuda_free(src_buf);
+            cuda_free(dst_buf);
+            return {HTensor::DType::Float32, x.shape(), std::move(bytes)};
+        }
+#endif
+
         std::vector<std::byte> bytes(x.data());
         std::mt19937 rng{std::random_device{}()};
         std::bernoulli_distribution keep(1.0f - rate_);
-        if (x.dtype() == HTensor::DType::Float32) {
+
+        switch (x.dtype()) {
+        case HTensor::DType::Float32: {
             const float* src = reinterpret_cast<const float*>(x.data().data());
             float* dst = reinterpret_cast<float*>(bytes.data());
             std::size_t n = x.data().size() / sizeof(float);
             for (std::size_t i = 0; i < n; ++i)
                 dst[i] = keep(rng) ? src[i] : 0.0f;
-        } else {
+            break;
+        }
+        case HTensor::DType::Float64: {
             const double* src = reinterpret_cast<const double*>(x.data().data());
             double* dst = reinterpret_cast<double*>(bytes.data());
             std::size_t n = x.data().size() / sizeof(double);
             for (std::size_t i = 0; i < n; ++i)
                 dst[i] = keep(rng) ? src[i] : 0.0;
+            break;
         }
+        case HTensor::DType::Int32: {
+            const std::int32_t* src = reinterpret_cast<const std::int32_t*>(x.data().data());
+            std::int32_t* dst = reinterpret_cast<std::int32_t*>(bytes.data());
+            std::size_t n = x.data().size() / sizeof(std::int32_t);
+            for (std::size_t i = 0; i < n; ++i)
+                dst[i] = keep(rng) ? src[i] : 0;
+            break;
+        }
+        case HTensor::DType::Int64: {
+            const std::int64_t* src = reinterpret_cast<const std::int64_t*>(x.data().data());
+            std::int64_t* dst = reinterpret_cast<std::int64_t*>(bytes.data());
+            std::size_t n = x.data().size() / sizeof(std::int64_t);
+            for (std::size_t i = 0; i < n; ++i)
+                dst[i] = keep(rng) ? src[i] : 0;
+            break;
+        }
+        case HTensor::DType::UInt8: {
+            const std::uint8_t* src = reinterpret_cast<const std::uint8_t*>(x.data().data());
+            std::uint8_t* dst = reinterpret_cast<std::uint8_t*>(bytes.data());
+            for (std::size_t i = 0; i < x.data().size(); ++i)
+                dst[i] = keep(rng) ? src[i] : 0;
+            break;
+        }
+        }
+
         return {x.dtype(), x.shape(), std::move(bytes)};
     }
 

@@ -18,7 +18,6 @@ struct FixedProducer : Producer {
     std::size_t shape;
 };
 
-#if 0
 TEST(MultiAcceleratorScheduler, ForwardsAcrossCpuGpu) {
     const char* src = R"(
 producer p {1};
@@ -44,9 +43,8 @@ cycle { p -(id)-> l1 -(id)-> l2 -> c; }
 
     const auto& state = sched.runtime(1).state();
     EXPECT_EQ(state.consumer_tensors[0].shape().size(), 1u);
-EXPECT_EQ(state.consumer_tensors[0].shape()[0], 1u);
+    EXPECT_EQ(state.consumer_tensors[0].shape()[0], 1u);
 }
-#endif
 
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);

@@ -20,6 +20,13 @@ ConstantSlab<float> slab;
 Slots are 32-byte aligned so vectorised operations can load contiguous blocks
 without extra indirection.
 
+Compile-time checks ensure the alignment is preserved across targets:
+
+```cpp
+static_assert(offsetof(ConstantSlab<float>, sensor_data) % 32 == 0);
+static_assert(offsetof(ConstantSlab<float>, appendage_data) % 32 == 0);
+```
+
 ## Usage
 
 The slab is cleared with `clear()` which zeros all values and resets the active

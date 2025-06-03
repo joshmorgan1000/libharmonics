@@ -52,6 +52,10 @@ class DistributedScheduler {
     }
 
     /// Execute a single forward pass on all partitions.
+    ///
+    /// Each runtime is stepped in turn. Boundary tensors produced by one
+    /// partition are queued on their corresponding message bus so the next
+    /// partition can consume them during the same iteration.
     void step() {
         for (std::size_t i = 0; i < runtimes_.size(); ++i) {
             auto& rt = runtimes_[i];
@@ -91,6 +95,12 @@ class DistributedScheduler {
         std::variant<std::shared_ptr<MessageBus>, std::shared_ptr<ProofMessageBus>> bus{};
     };
 
+    /// Connect matching producers and consumers across partitions.
+    ///
+    /// A small map of producer names to their originating partition is built
+    /// first. Each consumer is then paired with the producer of the same name
+    /// and a message bus inserted between them. Secure mode swaps the plain bus
+    /// for one that also carries zero-knowledge proofs.
     void connect_boundaries() {
         std::unordered_map<std::string, std::pair<std::size_t, std::size_t>> prod_map;
         for (std::size_t p = 0; p < graphs_.size(); ++p)

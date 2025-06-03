@@ -47,6 +47,8 @@ is evaluated after each forward pass.
 - `weight_decay` &ndash; decay factor used by AdamW and LAMB (default `0`).
 - `accumulate_steps` &ndash; number of forward passes to gather gradients before
   updating parameters (default `1`).
+- `lr_schedule_fp` &ndash; optional callback returning the learning rate for
+  each step.
 
 Example configuration with Adam and gradient clipping:
 
@@ -58,6 +60,13 @@ opt.grad_clip = 1.0f;
 opt.early_stop_patience = 3;
 opt.early_stop_delta = 0.01f;
 auto state = g.fit(100, harmonics::make_auto_policy(), opt);
+```
+
+To decay the learning rate every ten steps:
+
+```cpp
+harmonics::ExponentialDecaySchedule sched{0.001f, 0.9f, 10};
+opt.lr_schedule_fp = sched;
 ```
 
 ## Training until a custom condition
@@ -143,4 +152,13 @@ node server.js
 ```
 
 Open `http://localhost:8080` to view the interactive chart. The dashboard includes pause/resume controls and shows a 10 step moving average of the gradient norm alongside the loss value and learning rate. The screenshot `docs/assets/training_dashboard.png` illustrates the default layout.
+
+## Distributed parameter server example
+
+A minimal parameter server is provided under
+`examples/distributed_parameter_server_example.cpp`. The server publishes the
+current parameters over one gRPC stream while a worker sends gradients back on a
+second stream. After applying the gradient, the updated parameter is broadcast
+to the worker. This demonstrates how Harmonics I/O primitives can coordinate a
+distributed training loop. See the runtime guide for build and run instructions.
 

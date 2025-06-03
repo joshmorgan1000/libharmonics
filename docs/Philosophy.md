@@ -102,7 +102,7 @@ Interop shims can wrap PyTorch, TensorFlow, or custom kernels behind the same in
 | **Integration with others**   | Add the ability to import and train or fine-tune existing LLMs or other models. |
 | **Model Hacking/Disassembly** | Enable introspection and modification of Harmonics models.                      |
 | **GPU / FPGA back‑ends**      | Validate substrate‑agnostic promise; attach metadata to registry objects.       |
-| **Quantum stub**              | Keep identical DSL while mapping flows to qubit amplitudes.                     |
+| **Quantum hardware**          | Keep identical DSL while mapping flows to qubit amplitudes and executing on hardware. |
 
 ---
 

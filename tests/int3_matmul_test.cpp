@@ -1,7 +1,6 @@
 #include <gpu/GlobalFunctionRegistry.hpp>
 #include <gtest/gtest.h>
 
-#if 0 // Disabled due to unstable GPU fallback behavior
 TEST(GpuShaderRegistryTest, Int3MatmulCpuFallback) {
     harmonics::registerAllShaders();
     const auto* fn = harmonics::GPUFunctionRegistry::getInstance().get("int3_matmul");
@@ -15,7 +14,6 @@ TEST(GpuShaderRegistryTest, Int3MatmulCpuFallback) {
     int32_t expected = 1 * 4 + 2 * 5 + 3 * 6;
     EXPECT_EQ((*vec)[0], expected);
 }
-#endif
 
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);

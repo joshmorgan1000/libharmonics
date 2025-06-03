@@ -63,8 +63,7 @@ TEST(DistributedIO, SocketServerSendsData) {
 TEST(DistributedIO, GrpcServerRoundtrip) {
     harmonics::GrpcServer server;
     std::thread srv([&]() {
-        auto p = server.accept_producer();
-        auto r = p->next();
+        auto r = server.pop();
         const float* d = reinterpret_cast<const float*>(r.data().data());
         EXPECT_EQ(d[0], 5.f);
         EXPECT_EQ(d[1], 6.f);

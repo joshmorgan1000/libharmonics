@@ -97,6 +97,7 @@ A working OpenCL SDK is required so that `<CL/cl.h>` can be found by the compile
 ## Runtime selection
 
 Set `HARMONICS_ENABLE_OPENCL=1` at runtime to initialise the OpenCL subsystem. When multiple platforms are installed, the environment variable `HARMONICS_OPENCL_PLATFORM` selects the platform index while `HARMONICS_OPENCL_DEVICE` chooses the device on that platform. The backend is chosen by setting `DeploymentDescriptor::backend` to `Backend::FPGA` or by calling `select_accelerator_backend()` and letting the runtime pick the first available device.
+The device selection can also be overridden programmatically via `DeploymentDescriptor::fpga_device_index`.
 
 Call `opencl_device_count()` to query the number of devices detected by the runtime.
 
@@ -113,6 +114,11 @@ auto host = harmonics::fpga_to_host(dev);
 ```
 
 These helpers provide the functionality required by the production runtime.
+
+Asynchronous variants `fpga_to_device_async()` and `fpga_to_host_async()` are
+available to overlap OpenCL transfers with kernel execution. Compiled activation
+kernels are cached in memory by `opencl_build_activation_kernel()` to avoid
+rebuilding identical kernels on subsequent runs.
 
 
 # Incremental Compilation Cache Workflow
@@ -134,7 +140,7 @@ harmonics::shader_compile_cache().clear();
 auto kernels = harmonics::compile_cycle_kernels(graph, policy);
 ```
 
-When Vulkan support is enabled, compiled shaders are also written to disk. The
+When Vulkan or CUDA support is enabled, compiled shaders are also written to disk. The
 files reside under `shader_cache/` by default and the directory can be changed
 via the `HARMONICS_SHADER_CACHE` environment variable. Clearing the in-memory
 map or deleting these files forces shaders to be recompiled.

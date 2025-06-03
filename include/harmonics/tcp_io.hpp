@@ -131,6 +131,8 @@ class ProofTcpProducer : public Producer {
             net_close(fd_);
     }
 
+    void fetch() { prod_->fetch(); }
+
     HTensor next() override { return prod_->next(); }
     const std::string& proof() const { return prod_->proof(); }
     std::size_t size() const override { return 0; }

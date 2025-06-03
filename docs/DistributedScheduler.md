@@ -25,9 +25,14 @@ For cross-process deployments each partition may instead use `RemoteScheduler`. 
 ```cpp
 using harmonics::RemoteBinding;
 std::vector<RemoteBinding> prod = {{"output", "hostA", 9000}};
-std::vector<RemoteBinding> cons = {{"input", "hostB", 9001}};
+std::vector<RemoteBinding> cons = {
+    {"input", "hostB", 9001, RemoteTransport::TCP, true, 0}}; // compress tensors
 RemoteScheduler sched(part, prod, cons);
 sched.fit(1);
 ```
+
+Set `compress` in a binding to enable Zstandard compression for that connection.
+`max_message_size` can be used with gRPC or Flight transports to tune the
+maximum send and receive size in bytes.
 
 Multiple remote schedulers can be combined to form a larger distributed graph, allowing flexible placement of partitions across machines.

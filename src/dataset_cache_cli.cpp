@@ -76,8 +76,15 @@ int main(int argc, char** argv) {
             {
                 std::ifstream chk(path, std::ios::binary);
                 if (chk) {
-                    Hdf5Producer tmp(path);
-                    existing = tmp.size();
+                    try {
+                        Hdf5Producer tmp(path);
+                        existing = tmp.size();
+                    } catch (const std::exception&) {
+                        // If the existing file is corrupted or truncated simply
+                        // discard it and start the transfer from scratch.
+                        std::remove(path.c_str());
+                        existing = 0;
+                    }
                 }
             }
 
@@ -92,12 +99,19 @@ int main(int argc, char** argv) {
                 CachedProducer cache(nullptr, path);
                 cache.download(remote);
             } else {
-                CheckpointHdf5Consumer writer(path);
-                while (true) {
-                    HTensor t = remote->next();
-                    if (t.data().empty())
-                        break;
-                    writer.push(t);
+                try {
+                    CheckpointHdf5Consumer writer(path);
+                    while (true) {
+                        HTensor t = remote->next();
+                        if (t.data().empty())
+                            break;
+                        writer.push(t);
+                    }
+                } catch (const std::exception&) {
+                    // If appending fails delete the partial file and retry.
+                    std::remove(path.c_str());
+                    CachedProducer cache(nullptr, path);
+                    cache.download(remote);
                 }
             }
 

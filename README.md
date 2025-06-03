@@ -37,7 +37,12 @@ is materialised.  This flexibility stems from a few core goals:
 - **Pluggable ops** – activations and losses are registered objects, not keywords.
 - **Clear namespace** – runtime types are prefixed with `H` to avoid clashes.
 - **Zero Python dependency** – the reference interpreter is modern C++.
-- **Quantum circuit support** – a stub for quantum circuits and a simulator backend.
+ - **Quantum circuit support** – includes a simulator and a pluggable hardware backend.
+   Build with `-DHARMONICS_HAS_QUANTUM_HW=1` and set `HARMONICS_ENABLE_QUANTUM_HW=1`
+   so `execute_on_hardware()` loads `libquantum_hw.so` (or the path given in
+   `HARMONICS_QUANTUM_HW_LIB`). Use `quantum_hardware_runtime_available()` to
+   check whether a device library was found. See [docs/Quantum.md](docs/Quantum.md)
+   for more details.
 
 ### Build prerequisites
 
@@ -54,12 +59,29 @@ The project uses CMake.  A convenience script `scripts/run-tests.sh` configures 
 # Build in Release mode and run the tests
 ./scripts/run-tests.sh Release
 ```
+To verify that the suite behaves identically across build types, run `scripts/run-tests-all.sh` which sequentially builds and tests both Release and Debug configurations.
+
 
 To build without running the tests, invoke CMake manually:
 
 ```bash
 cmake -S . -B build
 cmake --build build -j $(nproc)
+```
+
+Unity builds are enabled by default to reduce compilation time. If you
+encounter issues or prefer traditional builds, disable this behaviour by
+passing `-DENABLE_UNITY_BUILD=OFF` when invoking CMake.
+
+Link time optimisation (LTO) and profile guided optimisation (PGO) are also
+available. Enable LTO with `-DENABLE_LTO=ON`. PGO is controlled through the
+`PGO_PHASE` option which can be `GENERATE` or `USE`:
+
+```bash
+# Instrument the build to generate profiles
+cmake -S . -B build -DPGO_PHASE=GENERATE
+# After running your workload, rebuild using the collected data
+cmake -S . -B build -DPGO_PHASE=USE
 ```
 
 The repository also provides a small benchmark suite. Run `scripts/run-benchmarks.sh`
@@ -109,7 +131,10 @@ Additional programs demonstrate advanced features:
   with the loss value and learning rate used for each step.
 - `training_visualizer_example` runs a minimal training loop and streams progress
   metrics to the dashboard using `WebSocketTrainingVisualizer`.
-- `quantum_backend_demo` shows the quantum circuit simulator in action.
+  - `quantum_backend_demo` shows the quantum circuit simulator in action.
+  - `quantum_hardware_demo` demonstrates running the same circuit on a
+    device library when hardware support is enabled. `quantum_hardware_large`
+    executes a bigger test circuit using the same path.
 
 ## Dataset utilities
 
@@ -377,7 +402,8 @@ An experimental FPGA path is provided as a design stub. Build with
 `HARMONICS_ENABLE_OPENCL=1` so the loader initialises the OpenCL subsystem.
 When multiple platforms are installed the environment variable
 `HARMONICS_OPENCL_PLATFORM` selects the platform index and `HARMONICS_OPENCL_DEVICE`
-chooses the device. Select the backend by
+chooses the device. The selection can also be overridden through
+`DeploymentDescriptor::fpga_device_index`. Select the backend by
 setting `DeploymentDescriptor::backend` to `Backend::FPGA`. If no compatible
 device is available the runtime transparently falls back to the CPU
 implementation. See [docs/Accelerators.md#fpga-backend](docs/Accelerators.md#fpga-backend)
@@ -392,6 +418,9 @@ JavaScript bindings can also be built by enabling `-DHARMONICS_HAS_JS=1`.
 The resulting `libharmonics_js` module links against V8 and provides the
 `compileGraph`, `createRuntime` and `runCycle` helpers for use from Node.js or
 other V8 environments.
+
+Python bindings are available with `-DHARMONICS_HAS_PY=1`. The module is named
+`harmonics_py` and exposes the same helper functions for use from Python.
 
 ## Documentation
 

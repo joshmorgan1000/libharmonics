@@ -60,11 +60,19 @@ The TCP helpers are only available on POSIX systems.
 
 `GrpcProducer` and `GrpcConsumer` operate over a TCP connection using the gRPC
 message format. Each tensor is sent with a 1 byte flag followed by a 32‑bit
-big‑endian length.
+big‑endian length. Connections perform a lightweight handshake exchanging the
+`"HGRP"` magic string so mismatched transports fail fast. The handshake is
+carried in the call metadata under the `magic` key.
 
 ```cpp
 harmonics::GrpcConsumer cons("127.0.0.1", 50051);
 harmonics::GrpcProducer prod("127.0.0.1", 50051);
+// Optional third argument tunes the maximum message size
+harmonics::GrpcConsumer big_cons("127.0.0.1", 50051, 8 * 1024 * 1024);
+harmonics::GrpcProducer big_prod("127.0.0.1", 50051, 8 * 1024 * 1024);
+// Fourth argument sets a timeout in milliseconds and enables automatic reconnect
+harmonics::GrpcConsumer timed_cons("127.0.0.1", 50051, 0, 1000);
+harmonics::GrpcProducer timed_prod("127.0.0.1", 50051, 0, 1000);
 ```
 
 These helpers are also POSIX only.
@@ -101,6 +109,26 @@ auto cons = harmonics::make_consumer("file:results.bin");
 
 Supported schemes are `file`, `socket`, `tcp` and `grpc` (the latter three only on POSIX platforms).
 
+## Apache Arrow Flight
 
-The output shows the initial and updated parameter values exchanged via Flight.
+Harmonics now includes lightweight helpers that mimic the core Flight protocol.
+`FlightProducer` and `FlightConsumer` reuse the gRPC framing layer but expose
+an Arrow‑style API. They can connect to a `TensorFlightServer` running either in
+memory or over TCP, making it easy to stream tensors between processes while
+reusing optimised Arrow buffers.
+
+```cpp
+#include <harmonics/flight_io.hpp>
+
+auto server = std::make_shared<harmonics::TensorFlightServer>();
+harmonics::FlightProducer prod(server);
+harmonics::FlightConsumer cons(server);
+
+cons.push(tensor);            // send through the server
+auto out = prod.next();       // receive the tensor back
+```
+
+When Arrow is enabled these helpers can also communicate with external
+applications that implement the Flight protocol. This is useful for parameter
+servers or remote dataset shards where Arrow binaries are already used.
 

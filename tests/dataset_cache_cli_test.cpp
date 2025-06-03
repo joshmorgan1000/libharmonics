@@ -153,42 +153,39 @@ TEST(DatasetCacheCli, ServeUploadAndClient) {
     std::remove(dst);
 }
 
-// TODO: ResumeDownload test is currently flaky; re-enable once the transfer
-//       resumption behaviour is stabilized.
-// TEST(DatasetCacheCli, ResumeDownload) {
-//     const char* src = "resume_src.h5";
-//     const char* dst = "resume_dst.h5";
-//     create_hdf5(src);
-//
-//     // Simulate an interrupted transfer by creating a partial cache with a
-//     // single record already present locally.
-//     {
-//         Hdf5Consumer partial_cons(dst);
-//         partial_cons.push(make_tensor(1.f));
-//     }
-//
-//     // Resume the download to fetch the remaining records.
-//     SocketServer full;
-//     std::thread srv2([&]() {
-//         auto c = full.accept_consumer();
-//         Hdf5Producer prod(src);
-//         for (std::size_t i = 0; i < prod.size(); ++i)
-//             c->push(prod.next());
-//         c->push({});
-//     });
-//
-//     std::string cmd = std::string("./dataset_cache_cli download ") + dst +
-//                       " 127.0.0.1 " + std::to_string(full.port()) +
-//                       " > /dev/null";
-//     ASSERT_EQ(std::system(cmd.c_str()), 0);
-//     srv2.join();
-//
-//     Hdf5Producer check(dst);
-//     EXPECT_EQ(check.size(), 2u);
-//
-//     std::remove(src);
-//     std::remove(dst);
-// }
+TEST(DatasetCacheCli, ResumeDownload) {
+    const char* src = "resume_src.h5";
+    const char* dst = "resume_dst.h5";
+    create_hdf5(src);
+
+    // Simulate an interrupted transfer by creating a partial cache with a
+    // single record already present locally.
+    {
+        Hdf5Consumer partial_cons(dst);
+        partial_cons.push(make_tensor(1.f));
+    }
+
+    // Resume the download to fetch the remaining records.
+    SocketServer full;
+    std::thread srv2([&]() {
+        auto c = full.accept_consumer();
+        Hdf5Producer prod(src);
+        for (std::size_t i = 0; i < prod.size(); ++i)
+            c->push(prod.next());
+        c->push({});
+    });
+
+    std::string cmd = std::string("./dataset_cache_cli download ") + dst + " 127.0.0.1 " +
+                      std::to_string(full.port()) + " > /dev/null";
+    ASSERT_EQ(std::system(cmd.c_str()), 0);
+    srv2.join();
+
+    Hdf5Producer check(dst);
+    EXPECT_EQ(check.size(), 2u);
+
+    std::remove(src);
+    std::remove(dst);
+}
 #endif
 
 int main(int argc, char** argv) {

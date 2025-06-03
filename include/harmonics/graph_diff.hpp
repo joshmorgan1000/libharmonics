@@ -10,13 +10,30 @@
 
 namespace harmonics {
 
-/** Information about edits between two graphs. */
+/**
+ * @brief Information about edits between two graphs.
+ *
+ * GraphDiff captures structural changes required to transform one
+ * HarmonicGraph into another. The diff can be computed with
+ * @ref diff_graphs and later applied using @ref apply_diff. Each edit
+ * is represented either as a layer addition/removal or as a flow change
+ * between nodes.
+ */
 struct GraphDiff {
+    /**
+     * @brief Representation of a single edge in the graph.
+     *
+     * A flow describes an arrow from @p src to @p dst. When @p backward is
+     * true the arrow carries gradients during backpropagation. Optional
+     * @p func stores the activation or loss function associated with the edge
+     * if one exists.
+     */
     struct Flow {
-        std::string src;
-        std::string dst;
-        bool backward{false};
-        std::optional<std::string> func{};
+        std::string src;                   ///< Name of the source node
+        std::string dst;                   ///< Name of the destination node
+        bool backward{false};              ///< Indicates a backward edge
+        std::optional<std::string> func{}; ///< Activation or loss function
+
         bool operator==(const Flow& other) const {
             return src == other.src && dst == other.dst && backward == other.backward &&
                    func == other.func;
@@ -29,10 +46,19 @@ struct GraphDiff {
     std::vector<Flow> removed_flows{};                ///< Flows removed from the old graph
 };
 
-/** Compute a diff transforming @p before into @p after. */
+/**
+ * @brief Compute edits required to transform one graph into another.
+ *
+ * The function walks both graphs collecting added and removed layers as well
+ * as flow changes. The resulting GraphDiff can later be applied using
+ * @ref apply_diff. Only simple structural differences are detected; changes to
+ * tensor shapes or other metadata are ignored.
+ */
 inline GraphDiff diff_graphs(const HarmonicGraph& before, const HarmonicGraph& after) {
     GraphDiff diff;
 
+    // Record the layer names present in each graph so we can detect additions
+    // and removals by simple set difference operations.
     std::unordered_set<std::string> before_layers;
     for (const auto& l : before.layers)
         before_layers.insert(l.name);
@@ -47,6 +73,8 @@ inline GraphDiff diff_graphs(const HarmonicGraph& before, const HarmonicGraph& a
         if (!after_layers.count(l.name))
             diff.removed_layers.push_back(l.name);
 
+    // Helper converting cycle entries into a stable list of flows. Using names
+    // rather than indices keeps the diff readable and independent of ordering.
     auto collect_flows = [](const HarmonicGraph& g) {
         std::vector<GraphDiff::Flow> flows;
         for (const auto& fl : g.cycle) {
@@ -81,18 +109,23 @@ inline GraphDiff diff_graphs(const HarmonicGraph& before, const HarmonicGraph& a
         return flows;
     };
 
+    // Build flow lists for both graphs and then compute simple set differences
+    // based on a unique textual key. This avoids O(n^2) comparisons.
     auto before_flows = collect_flows(before);
     auto after_flows = collect_flows(after);
+    // Store textual representations of all flows from the first graph.
     std::unordered_set<std::string> before_set;
     auto flow_key = [](const GraphDiff::Flow& f) {
         return f.src + "->" + f.dst + (f.backward ? "b" : "f") + (f.func ? *f.func : "");
     };
     for (const auto& f : before_flows)
         before_set.insert(flow_key(f));
+    // Same for the second graph so we can quickly check membership.
     std::unordered_set<std::string> after_set;
     for (const auto& f : after_flows)
         after_set.insert(flow_key(f));
 
+    // Compare the two sets to determine added and removed flows.
     for (const auto& f : after_flows)
         if (!before_set.count(flow_key(f)))
             diff.added_flows.push_back(f);
@@ -103,7 +136,14 @@ inline GraphDiff diff_graphs(const HarmonicGraph& before, const HarmonicGraph& a
     return diff;
 }
 
-/** Apply a diff to modify @p g in place. */
+/**
+ * @brief Apply the edits contained in a GraphDiff to a graph.
+ *
+ * Layers and flows referenced by the diff are added or removed from @p g. The
+ * operation mutates the graph in place and performs no validation beyond what
+ * the helper functions in @ref graph_edit provide. Callers should ensure that
+ * the diff was generated from a compatible graph.
+ */
 inline void apply_diff(HarmonicGraph& g, const GraphDiff& diff) {
     for (const auto& f : diff.removed_flows)
         remove_flow(g, f.src, f.dst, f.backward);
@@ -115,7 +155,13 @@ inline void apply_diff(HarmonicGraph& g, const GraphDiff& diff) {
         add_flow(g, f.src, f.dst, f.func, f.backward);
 }
 
-/** Merge @p base with @p update and return the resulting graph. */
+/**
+ * @brief Create a new graph by merging @p update into @p base.
+ *
+ * This is a convenience wrapper combining @ref diff_graphs and @ref apply_diff.
+ * It first computes the diff between the two graphs and then applies it to a
+ * copy of @p base. The original graphs remain unmodified.
+ */
 inline HarmonicGraph merge_graphs(const HarmonicGraph& base, const HarmonicGraph& update) {
     HarmonicGraph result = base;
     auto diff = diff_graphs(base, update);

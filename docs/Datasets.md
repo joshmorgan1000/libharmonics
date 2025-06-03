@@ -153,6 +153,24 @@ auto async = std::make_shared<harmonics::AsyncProducer>(dataset);
 
 ## Other formats
 
+### Apache Arrow arrays
+
+Harmonics can also consume tensors from in‑memory Arrow data using the helpers
+in `arrow_dataset.hpp`. `ArrowArrayProducer` accepts an `ArrowSchema` and
+`ArrowArray` pair and yields one tensor per record batch row. This is convenient
+when another library already generates data in Arrow format.
+
+```cpp
+#include <harmonics/arrow_dataset.hpp>
+
+// schema and array are assumed to be populated elsewhere
+harmonics::ArrowArrayProducer arrow_prod(schema, array);
+auto t = arrow_prod.next();
+```
+
+The free function `arrow_column_to_tensor` converts a single float column into an
+`HTensor` for quick interoperability.
+
 `TFRecordProducer` reads records from TensorFlow TFRecord files and yields a byte
 tensor for each record.
 
@@ -193,7 +211,10 @@ by HDF5. The consumer serialises tensors into a file while the producer reads
 them back later. This makes it easy to snapshot preprocessed datasets:
 
 The container header now stores a 64‑bit record count so very large datasets are
-supported without truncation.
+supported without truncation. Passing `true` when constructing
+`Hdf5Consumer` or `CheckpointableHdf5Consumer` compresses the payload with
+Zstandard. Compressed containers start with the magic string `HDFZ` and are
+decompressed transparently by the producer.
 
 ```cpp
 // save two samples

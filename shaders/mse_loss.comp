@@ -1,0 +1,10 @@
+#version 450
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) buffer Pred { float pred[]; };
+layout(std430, binding = 1) buffer Target { float target[]; };
+layout(std430, binding = 2) buffer Out { float loss[]; };
+void main() {
+    uint idx = gl_GlobalInvocationID.x;
+    float diff = pred[idx] - target[idx];
+    loss[idx] = diff * diff;
+}
